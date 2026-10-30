@@ -1,7 +1,7 @@
 # boardingparty — design
 
 Date: 2026-10-29
-Status: draft for review
+Status: approved 2026-10-29; workspace, triggers and email sources added 2026-10-30
 
 ## 1. What it is and why
 
@@ -52,7 +52,10 @@ Non-goals (v1)
   download.
 - Generating Playwright regression tests from runs.
 - Load/performance testing. The rate limit is there to keep load *low*.
-- Hosted/commercial version, billing, multi-tenant anything.
+- Hosted/commercial version, billing, multi-tenant anything, including
+  hosted inboxes and SMS numbers (cloud services come after the self-hosted
+  product works).
+- SMS, sending and replying to email (designed for, built later).
 - Testing native mobile apps (mobile = phone-sized browser viewport only).
 
 Anti-goals (would make it a failure even if it works)
@@ -73,11 +76,11 @@ Anti-goals (would make it a failure even if it works)
   pre-made accounts), people count, activity pattern, behaviour mix,
   stories, and `canWatchRecordings` (makes it a supervisor).
 - **Persona**: one virtual user of a role. Data, not a process: identity,
-  traits, credentials, browser storage state (cookies), notes/memory,
-  history, inbox address.
+  traits, a personal workspace (§3.1), history.
 - **Story**: a goal in plain words, never click steps. May declare
-  *preconditions* ("an approved session starting within 10 min") and a
-  *handoff* ("then waits for: Clinician approves, up to 8 h").
+  *preconditions* ("an approved session starting within 10 min"), a
+  *handoff* ("then waits for: Clinician approves, up to 8 h"), and a
+  *trigger* (§3.2) instead of the role's activity schedule.
 - **Handoff**: a dependency between personas, satisfied by something
   observable on the site or in email, not by personas talking to each
   other. The director tracks it; personas never message each other.
@@ -87,6 +90,46 @@ Anti-goals (would make it a failure even if it works)
   flagged), recording, trace, log and cost.
 - **Bug**: a grouped problem. Fingerprint from failing step + error/request
   signature + page; hits accumulate on the same bug.
+
+### 3.1 Persona workspace
+Everything a regular user has around the site, owned by one persona and
+loaded into a run through MCP tools. A workspace can only act through what is
+explicitly allowed; everything else is visible to humans and invisible to the
+agent.
+
+- **Channels**: one or more addresses per persona (personal and work email;
+  later a phone number), each address belonging to exactly one persona.
+  A channel is configured per project with a type, a connection, and
+  - *receive*: on/off and a **required filter** (allowed senders/domains,
+    optional subject patterns). Only messages passing the filter can wake a
+    persona; the rest go to a "filtered out" list humans can see.
+  - *send* (later): on/off and a required recipient allow-list.
+  Every channel turns what arrives into one shape, **Message**: channel,
+  address, sender, subject/title, body, links, attachments, received time.
+  Tools: `messages_list`, `message_read` (`message_send` later).
+- **Drive**: seeded synthetic files clearly marked as specimens (ID card
+  image stamped SPECIMEN, CV PDF, letters, product photos), plus everything
+  the persona downloads. Uploads pick from the drive. Tools: `drive_list`,
+  `drive_get`; browser downloads land in the drive automatically.
+- **Calendar**: invites from `.ics` attachments and "add to calendar" links.
+  Events are time triggers (§3.2). Tools: `calendar_list`.
+- **Vault**: site logins and TOTP secrets; generates 2FA codes. Tools:
+  `vault_get`, `totp_code`.
+- **Wallet**: payment-provider test cards only (success, decline, 3-D Secure).
+  Tool: `wallet_cards`.
+- **Browser profile**: cookies/storage state between runs.
+- **Memory**: short notes the persona keeps about itself. Tool: `memory_save`.
+
+### 3.2 Triggers
+A run starts only from a trigger; deciding uses no model calls.
+- *schedule*: the role's activity pattern (§5).
+- *handoff*: another persona completed what this one waits for.
+- *message*: a Message that passed the channel filter matches a story's
+  trigger rule (sender, subject, keywords, link host). The message is given
+  to the run as context. Optional later: a cheap model sorts messages no
+  rule matched.
+- *calendar*: an event in the persona's calendar starts (with a lead time,
+  default 2 min).
 
 ## 4. Architecture
 
@@ -163,11 +206,25 @@ Director MCP tools (the run token in the header identifies persona + run):
   frames + trace summary), `flag_run(id, problem)`. The director checks the
   role behind the run token; user-role runs get "not allowed".
 
-### 4.4 Email
-- Mailpit in the namespace. Personas get addresses on one domain
-  (`<slug>@inbox.<project>`); the staging site must be configured to send
-  mail via Mailpit's SMTP. If the site can't be pointed at a custom SMTP,
-  that site can't use self sign-up. Documented as a precondition.
+### 4.4 Email sources (first release)
+Messages arrive through a channel adapter; adapters are the only
+channel-specific code.
+- **Mailpit** (in the namespace) for sites whose outgoing SMTP host can be
+  pointed at it on staging (e.g. lumistack: Google Workspace SMTP). Mailpit
+  calls the director's webhook on each new message. Free, nothing leaves the
+  cluster.
+- **IMAP** for sites that send through a provider's API (e.g. augmentive:
+  customer.io) and for invites humans send. The user brings a mailbox: a
+  dedicated Google Workspace or other mailbox with plus-addressing
+  (`cast+megan@domain`) or a catch-all on a domain. The director connects
+  out (IMAP IDLE), so nothing listens in the cluster. Credentials (app
+  password) stored as a Secret. Never point it at a mailbox humans use for
+  real work.
+- Links in emails often go through a tracking host first (customer.io click
+  tracking); those hosts must be in the project's extra hosts, and a blocked
+  one is reported as "story needs host X".
+- Hosted inboxes (boardingparty cloud services) are deferred until the
+  self-hosted product is proven. No cloud services in the first release.
 
 ### 4.5 Recordings
 - Playwright video + trace per run, uploaded to S3-compatible storage
