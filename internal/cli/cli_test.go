@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode"
 )
 
 func TestRunsTableFormatting(t *testing.T) {
@@ -90,7 +91,7 @@ func TestGetRejectsPathSeparators(t *testing.T) {
 }
 
 func TestRunWaitExitCodes(t *testing.T) {
-	pollEvery = time.Millisecond
+	setPoll(t)
 	for _, tc := range []struct {
 		state string
 		code  int
@@ -129,7 +130,7 @@ func TestRunWaitExitCodes(t *testing.T) {
 }
 
 func TestRunWaitTimeout(t *testing.T) {
-	pollEvery = time.Millisecond
+	setPoll(t)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/runs", func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(Run{ID: "r1"}) })
 	mux.HandleFunc("GET /api/runs/r1", func(w http.ResponseWriter, r *http.Request) {
@@ -148,5 +149,65 @@ func TestTokenOnlyInRunOutput(t *testing.T) {
 	printDetail(&buf, RunDetail{Run: Run{ID: "r1", Token: "SECRET"}})
 	if strings.Contains(buf.String(), "SECRET") {
 		t.Error("get leaks token")
+	}
+}
+
+func setPoll(t *testing.T) {
+	old := pollEvery
+	pollEvery = time.Millisecond
+	t.Cleanup(func() { pollEvery = old })
+}
+
+func TestOutputStripsControlChars(t *testing.T) {
+	evil := "x\x1b[2J\u009b31m\x07y\tz"
+	var buf bytes.Buffer
+	printDetail(&buf, RunDetail{
+		Run:       Run{ID: "r1", Persona: evil, Story: evil, State: "done", Outcome: evil},
+		Bugs:      []Bug{{Summary: evil, Step: evil, Evidence: evil, Note: evil, Severity: evil}},
+		Artifacts: []string{evil},
+	})
+	formatRuns(&buf, []Run{{ID: evil, Persona: evil, Story: evil, State: evil, Outcome: evil}}, time.Now())
+	for _, r := range buf.String() {
+		if r != '\n' && r != '\t' && unicode.IsControl(r) {
+			t.Fatalf("control rune %q in output", r)
+		}
+	}
+	if strings.ContainsAny(buf.String(), "\x1b\x9b") {
+		t.Error("raw ESC/CSI byte in output")
+	}
+	if !strings.Contains(buf.String(), "x?[2J?31m?y\tz") {
+		t.Errorf("unexpected cleaning: %q", buf.String())
+	}
+}
+
+func TestWaitToleratesTransientErrors(t *testing.T) {
+	setPoll(t)
+	var polls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/runs", func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(Run{ID: "r1"}) })
+	mux.HandleFunc("GET /api/runs/r1", func(w http.ResponseWriter, r *http.Request) {
+		if polls.Add(1) <= 2 {
+			http.Error(w, "boom \x1b[2J", http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(RunDetail{Run: Run{ID: "r1", State: "done"}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	if err := runAndWait(context.Background(), newClient(srv.URL), &bytes.Buffer{}, "a", "b", true, time.Minute); err != nil {
+		t.Fatalf("want exit 0, got %v", err)
+	}
+}
+
+func TestWaitGivesUpAfterThreeConsecutiveErrors(t *testing.T) {
+	setPoll(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/runs", func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(Run{ID: "r1"}) })
+	mux.HandleFunc("GET /api/runs/r1", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "down", 502) })
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	err := runAndWait(context.Background(), newClient(srv.URL), &bytes.Buffer{}, "a", "b", true, time.Minute)
+	if err == nil || errors.As(err, new(ExitError)) {
+		t.Fatalf("want poll error, got %v", err)
 	}
 }

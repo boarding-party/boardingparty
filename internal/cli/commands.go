@@ -52,7 +52,7 @@ func runAndWait(ctx context.Context, c *client, out io.Writer, persona, story st
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "run %s started (token %s)\n", r.ID, r.Token)
+	fmt.Fprintf(out, "run %s started (token %s)\n", clean(r.ID), clean(r.Token))
 	if !wait {
 		return nil
 	}
@@ -62,7 +62,7 @@ func runAndWait(ctx context.Context, c *client, out io.Writer, persona, story st
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "run %s %s: %s\n", fin.ID, fin.State, fin.Outcome)
+	fmt.Fprintf(out, "run %s %s: %s\n", clean(fin.ID), clean(fin.State), clean(fin.Outcome))
 	if fin.State != "done" {
 		return ExitError{Code: 1}
 	}
