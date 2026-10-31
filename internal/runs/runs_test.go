@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/tiny-systems/boardingparty/internal/artifacts"
 	"github.com/tiny-systems/boardingparty/internal/project"
@@ -17,6 +18,7 @@ type fakeLauncher struct {
 	mu               sync.Mutex
 	started, stopped []string
 	startErr         error
+	onStart          func(store.Run)
 	phases           map[string]phaseInfo // by session; missing = session gone
 }
 
@@ -33,9 +35,14 @@ func (f *fakeLauncher) Start(_ context.Context, r store.Run, _ project.Project) 
 	if f.startErr != nil {
 		return "", f.startErr
 	}
+	if f.onStart != nil {
+		f.onStart(r)
+	}
 	f.started = append(f.started, r.ID)
 	return "sess-" + r.ID, nil
 }
+
+func (f *fakeLauncher) SessionName(id string) string { return "sess-" + id }
 
 func (f *fakeLauncher) Stop(_ context.Context, session string) error {
 	f.mu.Lock()
@@ -172,5 +179,25 @@ func TestFinishConcurrentOnlyOneWins(t *testing.T) {
 	}
 	if nils != 1 || notActive != 1 || len(fl.stopped) != 1 {
 		t.Fatalf("nils=%d notActive=%d stopped=%v", nils, notActive, fl.stopped)
+	}
+}
+
+func TestStartWhenFinishedDuringLaunchStopsSession(t *testing.T) {
+	svc, fl := newSvc(t)
+	fl.onStart = func(r store.Run) {
+		if won, err := svc.Store.FinishRun(r.ID, store.RunFailed, "watchdog", time.Now()); err != nil || !won {
+			t.Error(won, err)
+		}
+	}
+	r, err := svc.Start(context.Background(), "ann", "checkout")
+	if !errors.Is(err, ErrNotActive) {
+		t.Fatalf("err = %v", err)
+	}
+	got, _ := svc.Store.RunByID(r.ID)
+	if got.State != store.RunFailed || got.Outcome != "watchdog" || got.Session != "" {
+		t.Errorf("run overwritten: %+v", got)
+	}
+	if len(fl.stopped) != 1 || fl.stopped[0] != "sess-"+r.ID {
+		t.Errorf("stopped = %v", fl.stopped)
 	}
 }

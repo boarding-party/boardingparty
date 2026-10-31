@@ -22,6 +22,7 @@ type noopLauncher struct{}
 func (noopLauncher) Start(_ context.Context, r store.Run, _ project.Project) (string, error) {
 	return "sess-" + r.ID, nil
 }
+func (noopLauncher) SessionName(id string) string       { return "sess-" + id }
 func (noopLauncher) Stop(context.Context, string) error { return nil }
 func (noopLauncher) Phase(context.Context, string) (string, bool, string, error) {
 	return "Running", true, "", nil

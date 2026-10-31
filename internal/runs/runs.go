@@ -15,6 +15,12 @@ import (
 )
 
 // ErrNotActive means the token is unknown or its run has already finished.
+// Defaults for the run watchdog.
+const (
+	DefaultRunTimeout   = 20 * time.Minute
+	DefaultPollInterval = 15 * time.Second
+)
+
 var ErrNotActive = errors.New("run not active")
 
 // ErrBadState means Finish was given a state that is not final.
@@ -23,6 +29,9 @@ var ErrBadState = errors.New("finish state must be done, stuck or failed")
 type Launcher interface {
 	Start(ctx context.Context, r store.Run, p project.Project) (session string, err error)
 	Stop(ctx context.Context, session string) error
+	// SessionName is the deterministic session name Start gives a run, so an
+	// orphan can be stopped even if its name was never recorded.
+	SessionName(runID string) string
 	// Phase reports the session's phase (Pending, Running, Done, Failed), whether
 	// it still exists, and its status message.
 	Phase(ctx context.Context, session string) (phase string, exists bool, message string, err error)
@@ -67,16 +76,21 @@ func (s *Service) Start(ctx context.Context, persona, story string) (store.Run, 
 	}
 	session, err := s.Launcher.Start(ctx, r, p)
 	if err != nil {
-		r.State, r.Outcome = store.RunFailed, err.Error()
-		if uerr := s.Store.UpdateRun(r); uerr != nil {
-			return r, errors.Join(err, uerr)
+		r.State, r.Outcome, r.Finished = store.RunFailed, err.Error(), time.Now().UTC()
+		if _, ferr := s.Store.FinishRun(r.ID, store.RunFailed, r.Outcome, r.Finished); ferr != nil {
+			return r, errors.Join(err, ferr)
 		}
 		return r, err
 	}
-	r.State, r.Session = store.RunRunning, session
-	if err := s.Store.UpdateRun(r); err != nil {
+	won, err := s.Store.SetRunSession(r.ID, session)
+	if err != nil {
 		return r, err
 	}
+	if !won {
+		// Finished (or failed by the watchdog) while launching: don't leak the session.
+		return r, errors.Join(ErrNotActive, s.Launcher.Stop(ctx, session))
+	}
+	r.State, r.Session = store.RunRunning, session
 	return r, nil
 }
 

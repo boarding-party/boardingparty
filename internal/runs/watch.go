@@ -50,8 +50,12 @@ func (s *Service) Reconcile(ctx context.Context, now time.Time, timeout time.Dur
 			errs = append(errs, fmt.Errorf("run %s: %w", r.ID, err))
 			continue
 		}
-		if won && r.Session != "" {
-			if err := s.Launcher.Stop(ctx, r.Session); err != nil {
+		if won {
+			session := r.Session
+			if session == "" {
+				session = s.Launcher.SessionName(r.ID) // may be an orphan from a crashed Start
+			}
+			if err := s.Launcher.Stop(ctx, session); err != nil {
 				errs = append(errs, fmt.Errorf("run %s: stop session: %w", r.ID, err))
 			}
 		}

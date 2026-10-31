@@ -178,6 +178,17 @@ func (s *Store) UpdateRun(r Run) error {
 	return nil
 }
 
+// SetRunSession records the launched session and moves a pending run to
+// running. It returns false if the run was no longer pending (e.g. already finished).
+func (s *Store) SetRunSession(id, session string) (bool, error) {
+	res, err := s.db.Exec(`UPDATE runs SET session=?, state='running' WHERE id=? AND state='pending'`, session, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // FinishRun atomically moves a pending or running run to a final state.
 // It returns false if the run was not active (already finished or unknown).
 func (s *Store) FinishRun(id string, state RunState, outcome string, finished time.Time) (bool, error) {

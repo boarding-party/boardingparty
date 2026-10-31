@@ -35,6 +35,9 @@ func sessionName(runID string) string {
 	return "bp-run-" + strings.ToLower(runID)
 }
 
+// SessionName implements runs.Launcher.
+func (t *Tiny) SessionName(runID string) string { return sessionName(runID) }
+
 func newSession() *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(sessionGVK)

@@ -7,7 +7,7 @@ FROM mcr.microsoft.com/playwright:v1.64.1-noble
 ARG PLAYWRIGHT_MCP_VERSION=0.0.84
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git curl ca-certificates \
+    && apt-get install -y --no-install-recommends git curl ca-certificates zip \
     && rm -rf /var/lib/apt/lists/*
 
 # Global install; browsers come from the base image (PLAYWRIGHT_BROWSERS_PATH=/ms-playwright).

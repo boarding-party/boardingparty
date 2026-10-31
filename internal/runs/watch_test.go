@@ -118,8 +118,8 @@ func TestReconcilePendingWithoutSessionLeftAloneUntilTimeout(t *testing.T) {
 	if r := get(t, svc, "old"); r.State != store.RunFailed {
 		t.Errorf("old state = %s", r.State)
 	}
-	if len(fl.stopped) != 0 {
-		t.Errorf("no session, nothing to stop: %v", fl.stopped)
+	if len(fl.stopped) != 1 || fl.stopped[0] != "sess-old" {
+		t.Errorf("only the timed-out run's possible orphan is stopped: %v", fl.stopped)
 	}
 }
 
@@ -134,6 +134,29 @@ func TestReconcileDoesNotOverwriteFinishedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	if r := get(t, svc, "r1"); r.State != store.RunDone || r.Outcome != "all good" {
+		t.Errorf("got %s %q", r.State, r.Outcome)
+	}
+}
+
+func TestReconcileOrphanStopsDeterministicSession(t *testing.T) {
+	svc, fl := newSvc(t)
+	seed(t, svc, "r1", store.RunPending, "", 21*time.Minute)
+	if err := svc.Reconcile(context.Background(), t0, 20*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if len(fl.stopped) != 1 || fl.stopped[0] != "sess-r1" {
+		t.Errorf("stopped = %v", fl.stopped)
+	}
+}
+
+func TestReconcileUnknownPhasePastTimeoutFails(t *testing.T) {
+	svc, fl := newSvc(t)
+	fl.phases = map[string]phaseInfo{"s1": {"", ""}}
+	seed(t, svc, "r1", store.RunRunning, "s1", 21*time.Minute)
+	if err := svc.Reconcile(context.Background(), t0, 20*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if r := get(t, svc, "r1"); r.State != store.RunFailed || r.Outcome != "no finish within 20m0s" {
 		t.Errorf("got %s %q", r.State, r.Outcome)
 	}
 }
