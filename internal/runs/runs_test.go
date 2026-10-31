@@ -229,3 +229,19 @@ func TestStartRefusesWhileAnotherRunActive(t *testing.T) {
 		t.Fatalf("start after finish: %v", err)
 	}
 }
+
+func TestStartBusyWhileFinishedRunSessionLingers(t *testing.T) {
+	svc, fl := newSvc(t)
+	seed(t, svc, "old1", store.RunDone, "s-old", time.Hour)
+	fl.sessions = map[string]string{"s-old": "old1"}
+	if _, err := svc.Start(context.Background(), "ann", "checkout"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("err = %v, want ErrBusy", err)
+	}
+	if len(fl.started) != 0 {
+		t.Errorf("launcher started %v", fl.started)
+	}
+	fl.sessions = nil
+	if _, err := svc.Start(context.Background(), "ann", "checkout"); err != nil {
+		t.Fatalf("start with no sessions: %v", err)
+	}
+}

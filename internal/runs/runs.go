@@ -86,6 +86,16 @@ func (s *Service) Start(ctx context.Context, persona, story string) (store.Run, 
 		err = ErrBusy
 	}
 	if err == nil {
+		// A finished run's session may still be alive (failed Stop, deletion in
+		// progress) and could read the next run's token.
+		var sessions map[string]string
+		if sessions, err = s.Launcher.Sessions(ctx); err != nil {
+			err = fmt.Errorf("list sessions: %w", err)
+		} else if len(sessions) > 0 {
+			err = ErrBusy
+		}
+	}
+	if err == nil {
 		err = s.Store.CreateRun(r)
 	}
 	s.startMu.Unlock()
