@@ -173,6 +173,41 @@ func TestStopDeletesSession(t *testing.T) {
 	}
 }
 
+func TestStopDeletesInForeground(t *testing.T) {
+	var got []client.DeleteOption
+	tn := newTiny()
+	base := tn.Client
+	tn.Client = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			got = opts
+			return c.Delete(ctx, obj, opts...)
+		},
+	})
+	name, _ := tn.Start(context.Background(), store.Run{ID: "aaaaaaaa11", Token: "t"}, project.Project{})
+	if err := tn.Stop(context.Background(), name); err != nil {
+		t.Fatal(err)
+	}
+	do := &client.DeleteOptions{}
+	do.ApplyOptions(got)
+	if do.PropagationPolicy == nil || *do.PropagationPolicy != metav1.DeletePropagationForeground {
+		t.Errorf("propagation = %v, want Foreground", do.PropagationPolicy)
+	}
+}
+
+func TestSessionsListsDeletingSession(t *testing.T) {
+	tn := newTiny()
+	now := metav1.Now()
+	s := &agentsv1.Session{ObjectMeta: metav1.ObjectMeta{Namespace: "bp", Name: "bp-run-aaaaaaaa",
+		Labels: map[string]string{runLabel: "aaaaaaaa11"}, DeletionTimestamp: &now, Finalizers: []string{"foregroundDeletion"}}}
+	if err := tn.Client.Create(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	got, err := tn.Sessions(context.Background())
+	if err != nil || got["bp-run-aaaaaaaa"] != "aaaaaaaa11" {
+		t.Errorf("sessions = %v, err = %v", got, err)
+	}
+}
+
 func TestPhaseReadsStatus(t *testing.T) {
 	tn := newTiny()
 	name, _ := tn.Start(context.Background(), store.Run{ID: "bbbbbbbb11", Token: "t"}, project.Project{})

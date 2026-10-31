@@ -9,7 +9,14 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	agentsv1 "github.com/tiny-systems/tiny/api/v1alpha1"
+
 	"github.com/tiny-systems/boardingparty/internal/artifacts"
+	"github.com/tiny-systems/boardingparty/internal/launcher"
 	"github.com/tiny-systems/boardingparty/internal/project"
 	"github.com/tiny-systems/boardingparty/internal/store"
 )
@@ -279,5 +286,24 @@ func TestStartPodListErrorIsNotBusy(t *testing.T) {
 	_, err := svc.Start(context.Background(), "ann", "checkout")
 	if err == nil || errors.Is(err, ErrBusy) || len(fl.started) != 0 {
 		t.Fatalf("err = %v started = %v", err, fl.started)
+	}
+}
+
+// A Session being deleted (deletionTimestamp set, foreground finalizer) is
+// still listed, so the gate must keep refusing a new run.
+func TestStartBusyWhileSessionIsDeleting(t *testing.T) {
+	svc, _ := newSvc(t)
+	sc := runtime.NewScheme()
+	if err := agentsv1.AddToScheme(sc); err != nil {
+		t.Fatal(err)
+	}
+	now := metav1.Now()
+	deleting := &agentsv1.Session{ObjectMeta: metav1.ObjectMeta{Namespace: "bp", Name: "bp-run-old",
+		Labels: map[string]string{"boardingparty.io/run": "old1"}, DeletionTimestamp: &now,
+		Finalizers: []string{"foregroundDeletion"}}}
+	svc.Launcher = &launcher.Tiny{Namespace: "bp",
+		Client: fake.NewClientBuilder().WithScheme(sc).WithObjects(deleting).Build()}
+	if _, err := svc.Start(context.Background(), "ann", "checkout"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("err = %v, want ErrBusy", err)
 	}
 }

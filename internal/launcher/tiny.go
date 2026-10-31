@@ -79,9 +79,14 @@ func (t *Tiny) Start(ctx context.Context, r store.Run, p project.Project) (strin
 	return name, nil
 }
 
-// Stop deletes the session (its workload goes with it); a missing session is success.
+// Stop deletes the session (its workload goes with it); a missing session is
+// success. The delete is foreground: the Session stays listed, with a
+// deletionTimestamp, until its Deployment, ReplicaSet and pods are gone, so the
+// busy gate keeps seeing it. Re-issuing the delete on a deleting Session is a no-op.
 func (t *Tiny) Stop(ctx context.Context, name string) error {
-	if err := session.Delete(ctx, t.Client, t.Namespace, name); err != nil {
+	s := &agentsv1.Session{ObjectMeta: metav1.ObjectMeta{Namespace: t.Namespace, Name: name}}
+	err := t.Client.Delete(ctx, s, client.PropagationPolicy(metav1.DeletePropagationForeground))
+	if err = client.IgnoreNotFound(err); err != nil {
 		return fmt.Errorf("delete session %s: %w", name, err)
 	}
 	return nil
