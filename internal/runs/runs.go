@@ -23,6 +23,9 @@ var ErrBadState = errors.New("finish state must be done, stuck or failed")
 type Launcher interface {
 	Start(ctx context.Context, r store.Run, p project.Project) (session string, err error)
 	Stop(ctx context.Context, session string) error
+	// Phase reports the session's phase (Pending, Running, Done, Failed), whether
+	// it still exists, and its status message.
+	Phase(ctx context.Context, session string) (phase string, exists bool, message string, err error)
 }
 
 type Service struct {

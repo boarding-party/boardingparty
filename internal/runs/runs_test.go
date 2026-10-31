@@ -17,6 +17,16 @@ type fakeLauncher struct {
 	mu               sync.Mutex
 	started, stopped []string
 	startErr         error
+	phases           map[string]phaseInfo // by session; missing = session gone
+}
+
+type phaseInfo struct{ phase, msg string }
+
+func (f *fakeLauncher) Phase(_ context.Context, session string) (string, bool, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.phases[session]
+	return p.phase, ok, p.msg, nil
 }
 
 func (f *fakeLauncher) Start(_ context.Context, r store.Run, _ project.Project) (string, error) {

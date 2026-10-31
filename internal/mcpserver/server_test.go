@@ -22,6 +22,9 @@ func (f *fakeLauncher) Start(_ context.Context, r store.Run, _ project.Project) 
 	return "sess-" + r.ID, nil
 }
 func (f *fakeLauncher) Stop(context.Context, string) error { return nil }
+func (f *fakeLauncher) Phase(context.Context, string) (string, bool, string, error) {
+	return "Running", true, "", nil
+}
 
 const director = "http://director.test"
 

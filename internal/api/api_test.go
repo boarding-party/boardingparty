@@ -23,6 +23,9 @@ func (noopLauncher) Start(_ context.Context, r store.Run, _ project.Project) (st
 	return "sess-" + r.ID, nil
 }
 func (noopLauncher) Stop(context.Context, string) error { return nil }
+func (noopLauncher) Phase(context.Context, string) (string, bool, string, error) {
+	return "Running", true, "", nil
+}
 
 const projYAML = `name: p
 sites: ["https://x.test"]
