@@ -2,33 +2,61 @@ package launcher
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
+	agentsv1 "github.com/tiny-systems/tiny/api/v1alpha1"
 
 	"github.com/tiny-systems/boardingparty/internal/project"
 	"github.com/tiny-systems/boardingparty/internal/store"
 )
 
+func testScheme() *runtime.Scheme {
+	sc := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, agentsv1.AddToScheme} {
+		if err := add(sc); err != nil {
+			panic(err)
+		}
+	}
+	return sc
+}
+
 func newTiny() *Tiny {
+	// The fake client assigns no UIDs; owner references need one.
+	n := 0
 	return &Tiny{
-		Client:      fake.NewClientBuilder().WithScheme(runtime.NewScheme()).Build(),
+		Client: fake.NewClientBuilder().WithScheme(testScheme()).WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if obj.GetUID() == "" {
+					n++
+					obj.SetUID(types.UID(fmt.Sprintf("uid-%d", n)))
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).Build(),
 		Namespace:   "bp",
 		WorkerImage: "ghcr.io/x/worker:1",
-		DirectorURL: "http://bp-director:8080",
+		DirectorURL: "http://bp-director.bp.svc:8080",
 		Model:       "claude-sonnet-5-5",
 	}
 }
 
-func getSession(t *testing.T, tn *Tiny, name string) *unstructured.Unstructured {
+func getSession(t *testing.T, tn *Tiny, name string) *agentsv1.Session {
 	t.Helper()
-	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(sessionGVK)
+	u := &agentsv1.Session{}
 	if err := tn.Client.Get(context.Background(), client.ObjectKey{Namespace: "bp", Name: name}, u); err != nil {
 		t.Fatal(err)
 	}
@@ -48,38 +76,73 @@ func TestStartCreatesSessionWithBothMCPServers(t *testing.T) {
 		t.Errorf("name = %q", name)
 	}
 	u := getSession(t, tn, name)
-	if u.GetLabels()["boardingparty.io/run"] != r.ID {
-		t.Errorf("labels = %v", u.GetLabels())
+	if u.Labels["boardingparty.io/run"] != r.ID {
+		t.Errorf("labels = %v", u.Labels)
 	}
-	spec, _, _ := unstructured.NestedMap(u.Object, "spec")
-	if spec["image"] != "ghcr.io/x/worker:1" || spec["model"] != "claude-sonnet-5-5" {
-		t.Errorf("spec = %v", spec)
+	spec := u.Spec
+	if spec.Image != "ghcr.io/x/worker:1" || spec.Model != "claude-sonnet-5-5" {
+		t.Errorf("spec = %+v", spec)
 	}
-	if task, _ := spec["task"].(string); task != Prompt(r) {
+	if spec.Task != Prompt(r) {
 		t.Errorf("task mismatch")
 	}
-	servers, _, _ := unstructured.NestedSlice(u.Object, "spec", "mcpServers")
+	servers := spec.MCPServers
 	if len(servers) != 2 {
 		t.Fatalf("servers = %v", servers)
 	}
-	bp := servers[0].(map[string]any)
-	if bp["name"] != "bp" || bp["url"] != "http://bp-director:8080/mcp/run/tok123" {
+	if bp := servers[0]; bp.Name != "bp" || bp.URL != "http://bp-director.bp.svc:8080/mcp/run/tok123" {
 		t.Errorf("bp = %v", bp)
 	}
-	pw := servers[1].(map[string]any)
-	if pw["name"] != "pw" || pw["command"] != "playwright-mcp" {
+	pw := servers[1]
+	if pw.Name != "pw" || pw.Command != "playwright-mcp" {
 		t.Errorf("pw = %v", pw)
 	}
-	args, _ := pw["args"].([]any)
 	want := []string{"--headless", "--isolated", "--no-sandbox", "--browser=chromium",
 		"--output-dir=/workspace/out", "--viewport-size=1280x800", "--caps=devtools"}
-	if len(args) != len(want) {
-		t.Fatalf("args = %v", args)
+	if strings.Join(pw.Args, " ") != strings.Join(want, " ") {
+		t.Errorf("args = %v", pw.Args)
 	}
-	for i, w := range want {
-		if args[i] != w {
-			t.Errorf("args[%d] = %v, want %s", i, args[i], w)
+}
+
+// tiny has no manager: Start must materialise the workload itself.
+func TestStartMaterialisesWorkspaceAndDeployment(t *testing.T) {
+	tn := newTiny()
+	name, err := tn.Start(context.Background(), store.Run{ID: "0123456789abcdef", Token: "t"}, project.Project{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	s := getSession(t, tn, name)
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := tn.Client.Get(ctx, client.ObjectKey{Namespace: "bp", Name: name + "-workspace"}, pvc); err != nil {
+		t.Fatalf("workspace PVC: %v", err)
+	}
+	dep := &appsv1.Deployment{}
+	if err := tn.Client.Get(ctx, client.ObjectKey{Namespace: "bp", Name: name + "-agent"}, dep); err != nil {
+		t.Fatalf("deployment: %v", err)
+	}
+	for _, o := range []metav1.Object{pvc, dep} {
+		if c := metav1.GetControllerOf(o); c == nil || c.UID != s.UID {
+			t.Errorf("%s not owned by the session", o.GetName())
 		}
+	}
+	if img := dep.Spec.Template.Spec.Containers[0].Image; img == "" {
+		t.Error("deployment has no container image")
+	}
+}
+
+func TestStartAlreadyExistsIsLaunchFailure(t *testing.T) {
+	tn := newTiny()
+	r := store.Run{ID: "0123456789abcdef", Token: "t"}
+	if _, err := tn.Start(context.Background(), r, project.Project{}); err != nil {
+		t.Fatal(err)
+	}
+	name, err := tn.Start(context.Background(), r, project.Project{})
+	if !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("err = %v, want AlreadyExists", err)
+	}
+	if name != "" {
+		t.Errorf("name = %q on failure", name)
 	}
 }
 
@@ -114,8 +177,7 @@ func TestPhaseReadsStatus(t *testing.T) {
 	tn := newTiny()
 	name, _ := tn.Start(context.Background(), store.Run{ID: "bbbbbbbb11", Token: "t"}, project.Project{})
 	u := getSession(t, tn, name)
-	_ = unstructured.SetNestedField(u.Object, "Failed", "status", "phase")
-	_ = unstructured.SetNestedField(u.Object, "boom", "status", "message")
+	u.Status.Phase, u.Status.Message = agentsv1.SessionFailed, "boom"
 	if err := tn.Client.Update(context.Background(), u); err != nil {
 		t.Fatal(err)
 	}
@@ -141,8 +203,7 @@ func specModel(t *testing.T, tn *Tiny, p project.Project) any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, _, _ := unstructured.NestedMap(getSession(t, tn, name).Object, "spec")
-	return spec["model"]
+	return getSession(t, tn, name).Spec.Model
 }
 
 func TestProjectModelOverridesDefault(t *testing.T) {
@@ -158,9 +219,7 @@ func TestSessionsListsLabelledSessionsOnly(t *testing.T) {
 	tn := newTiny()
 	n1, _ := tn.Start(context.Background(), store.Run{ID: "dddddddd11", Token: "t"}, project.Project{})
 	n2, _ := tn.Start(context.Background(), store.Run{ID: "eeeeeeee22", Token: "t"}, project.Project{})
-	other := newSession()
-	other.SetNamespace("bp")
-	other.SetName("unrelated")
+	other := &agentsv1.Session{ObjectMeta: metav1.ObjectMeta{Namespace: "bp", Name: "unrelated"}}
 	if err := tn.Client.Create(context.Background(), other); err != nil {
 		t.Fatal(err)
 	}
@@ -170,5 +229,39 @@ func TestSessionsListsLabelledSessionsOnly(t *testing.T) {
 	}
 	if len(got) != 2 || got[n1] != "dddddddd11" || got[n2] != "eeeeeeee22" {
 		t.Errorf("sessions = %v", got)
+	}
+}
+
+func pod(ns, name, app, sess string) *corev1.Pod {
+	l := map[string]string{}
+	if app != "" {
+		l["app"] = app
+	}
+	if sess != "" {
+		l["tinysystems.io/session"] = sess
+	}
+	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Labels: l}}
+}
+
+func TestLivePodsCountsOnlyRunSessionPods(t *testing.T) {
+	tn := newTiny()
+	ctx := context.Background()
+	if n, err := tn.LivePods(ctx); err != nil || n != 0 {
+		t.Fatalf("empty: %d %v", n, err)
+	}
+	for _, p := range []*corev1.Pod{
+		pod("bp", "a", "tiny-session", "bp-run-01234567"),
+		pod("bp", "b", "tiny-session", "bp-run-89abcdef"),
+		pod("bp", "c", "tiny-session", "someone-elses"),   // another session
+		pod("bp", "d", "bp-director", ""),                 // director itself
+		pod("bp", "e", "other", "bp-run-xxxxxxxx"),        // wrong app label
+		pod("elsewhere", "f", "tiny-session", "bp-run-1"), // other namespace
+	} {
+		if err := tn.Client.Create(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := tn.LivePods(ctx); err != nil || n != 2 {
+		t.Errorf("LivePods = %d %v, want 2", n, err)
 	}
 }

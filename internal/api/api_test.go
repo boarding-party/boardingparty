@@ -29,6 +29,7 @@ func (noopLauncher) Phase(context.Context, string) (string, bool, string, error)
 }
 
 func (noopLauncher) Sessions(context.Context) (map[string]string, error) { return nil, nil }
+func (noopLauncher) LivePods(context.Context) (int, error)               { return 0, nil }
 
 const projYAML = `name: p
 sites: ["https://x.test"]
@@ -232,5 +233,29 @@ func TestStartRunBusyIs409AndTokenRedacted(t *testing.T) {
 	b, _ = io.ReadAll(resp.Body)
 	if !strings.Contains(string(b), "another run is active") {
 		t.Errorf("message: %s", b)
+	}
+}
+
+type podErrLauncher struct{ noopLauncher }
+
+func (podErrLauncher) LivePods(context.Context) (int, error) { return 0, errors.New("secret-detail") }
+
+func TestStartRunInternalErrorIs500NotRawText(t *testing.T) {
+	srv, svc := setup(t, 1024)
+	svc.Launcher = podErrLauncher{}
+	do(t, "POST", srv.URL+"/api/project", projYAML)
+	resp := do(t, "POST", srv.URL+"/api/runs", `{"persona":"ann","story":"checkout"}`)
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 500 || strings.Contains(string(b), "secret-detail") {
+		t.Errorf("got %d %q", resp.StatusCode, b)
+	}
+}
+
+func TestStartRunUnknownPersonaIs400(t *testing.T) {
+	srv, _ := setup(t, 1024)
+	do(t, "POST", srv.URL+"/api/project", projYAML)
+	resp := do(t, "POST", srv.URL+"/api/runs", `{"persona":"nobody","story":"checkout"}`)
+	if resp.StatusCode != 400 {
+		t.Errorf("got %d, want 400", resp.StatusCode)
 	}
 }

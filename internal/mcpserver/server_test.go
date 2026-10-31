@@ -29,6 +29,7 @@ func (f *fakeLauncher) Phase(context.Context, string) (string, bool, string, err
 }
 
 func (f *fakeLauncher) Sessions(context.Context) (map[string]string, error) { return nil, nil }
+func (f *fakeLauncher) LivePods(context.Context) (int, error)               { return 0, nil }
 
 const director = "http://director.test"
 

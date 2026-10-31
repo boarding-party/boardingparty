@@ -102,18 +102,17 @@ func (s *server) startRun(w http.ResponseWriter, r *http.Request) {
 	}
 	run, err := s.svc.Start(r.Context(), req.Persona, req.Story)
 	if err != nil {
-		if errors.Is(err, runs.ErrBusy) {
-			fail(w, err)
-			return
-		}
-		// Unknown persona/story is a client error; a launcher failure still
-		// leaves a failed run behind (run.ID set).
-		if run.ID != "" {
+		// Unknown persona/story is a client error; a launcher failure leaves
+		// a failed run behind (run.ID set); anything else is internal.
+		switch {
+		case errors.Is(err, runs.ErrInvalid):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		case run.ID != "" && !errors.Is(err, runs.ErrBusy):
 			log.Printf("api: start run %s: %v", run.ID, err)
 			http.Error(w, "failed to launch run", http.StatusBadGateway)
-			return
+		default:
+			fail(w, err)
 		}
-		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, http.StatusCreated, redact(run))

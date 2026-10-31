@@ -21,6 +21,14 @@ type fakeLauncher struct {
 	onStart          func(store.Run)
 	phases           map[string]phaseInfo // by session; missing = session gone
 	sessions         map[string]string    // session -> run ID, as listed by Sessions
+	pods             int                  // run pods LivePods reports
+	podsErr          error
+}
+
+func (f *fakeLauncher) LivePods(context.Context) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pods, f.podsErr
 }
 
 func (f *fakeLauncher) Sessions(context.Context) (map[string]string, error) {
@@ -243,5 +251,33 @@ func TestStartBusyWhileFinishedRunSessionLingers(t *testing.T) {
 	fl.sessions = nil
 	if _, err := svc.Start(context.Background(), "ann", "checkout"); err != nil {
 		t.Fatalf("start with no sessions: %v", err)
+	}
+}
+
+func TestStartBusyWhileRunPodStillTerminating(t *testing.T) {
+	svc, fl := newSvc(t)
+	seed(t, svc, "old1", store.RunDone, "s-old", time.Hour)
+	fl.pods = 1 // session object gone, pod not yet
+	if _, err := svc.Start(context.Background(), "ann", "checkout"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("err = %v, want ErrBusy", err)
+	}
+	if len(fl.started) != 0 {
+		t.Errorf("launcher started %v", fl.started)
+	}
+	if rs, _ := svc.Store.Runs(10); len(rs) != 1 {
+		t.Errorf("busy start must not create a run: %+v", rs)
+	}
+	fl.pods = 0
+	if _, err := svc.Start(context.Background(), "ann", "checkout"); err != nil {
+		t.Fatalf("start with no pods: %v", err)
+	}
+}
+
+func TestStartPodListErrorIsNotBusy(t *testing.T) {
+	svc, fl := newSvc(t)
+	fl.podsErr = errors.New("forbidden")
+	_, err := svc.Start(context.Background(), "ann", "checkout")
+	if err == nil || errors.Is(err, ErrBusy) || len(fl.started) != 0 {
+		t.Fatalf("err = %v started = %v", err, fl.started)
 	}
 }

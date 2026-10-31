@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -28,6 +29,7 @@ func (fakeLauncher) Phase(context.Context, string) (string, bool, string, error)
 }
 
 func (fakeLauncher) Sessions(context.Context) (map[string]string, error) { return nil, nil }
+func (fakeLauncher) LivePods(context.Context) (int, error)               { return 0, nil }
 
 func do(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -96,5 +98,37 @@ func TestServeReturnsListenerError(t *testing.T) {
 	busy := &http.Server{Addr: ln.Addr().String(), Handler: http.NotFoundHandler()}
 	if err := serve(context.Background(), []*http.Server{good, busy}); err == nil {
 		t.Fatal("serve returned nil despite a listener failure")
+	}
+}
+
+func TestImageTag(t *testing.T) {
+	bi := func(deps ...*debug.Module) *debug.BuildInfo { return &debug.BuildInfo{Deps: deps} }
+	tiny := func(v string) *debug.Module { return &debug.Module{Path: tinyModule, Version: v} }
+	for name, tc := range map[string]struct {
+		bi   *debug.BuildInfo
+		flag string
+		want string
+	}{
+		"build info wins":     {bi(tiny("v0.11.0")), "9.9.9", "v0.11.0"},
+		"no build info":       {nil, "0.10.0", "0.10.0"},
+		"dep absent":          {bi(&debug.Module{Path: "x/y", Version: "v1.0.0"}), "0.10.0", "0.10.0"},
+		"replaced module":     {bi(&debug.Module{Path: tinyModule, Version: "v0.11.0", Replace: &debug.Module{Path: "../tiny"}}), "0.10.0", "0.10.0"},
+		"nothing known":       {nil, "", ""},
+		"devel falls to flag": {bi(tiny("(devel)")), "0.10.0", "0.10.0"},
+	} {
+		if got := imageTag(tc.bi, tc.flag); got != tc.want {
+			t.Errorf("%s: imageTag = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+func TestTinyVersionFromThisBinary(t *testing.T) {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		t.Skip("no build info")
+	}
+	// go test binaries list dependencies; the pinned release must be found.
+	if v := tinyVersion(bi); !strings.HasPrefix(v, "v0.") {
+		t.Errorf("tinyVersion = %q", v)
 	}
 }

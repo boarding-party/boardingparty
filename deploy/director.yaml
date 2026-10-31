@@ -11,6 +11,20 @@ rules:
   - apiGroups: ["agents.tinysystems.io"]
     resources: ["sessions"]
     verbs: ["get", "list", "watch", "create", "delete"]
+  # What tiny's pkg/session needs to materialise a session's workload.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "create"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "create"]
+  - apiGroups: [""]
+    resources: ["configmaps", "services"]
+    verbs: ["get"]
+  # The one-run gate also waits for run pods to be gone.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

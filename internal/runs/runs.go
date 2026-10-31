@@ -24,6 +24,9 @@ const (
 
 var ErrNotActive = errors.New("run not active")
 
+// ErrInvalid means the request names a persona or story that does not exist.
+var ErrInvalid = errors.New("invalid run request")
+
 // ErrBusy means another run is pending or running. Plan 1 runs one at a time
 // because a session can read every other session's spec (and so its token).
 var ErrBusy = errors.New("another run is active; Plan 1 runs one at a time")
@@ -42,6 +45,9 @@ type Launcher interface {
 	Phase(ctx context.Context, session string) (phase string, exists bool, message string, err error)
 	// Sessions lists the run sessions that exist, as session name -> run ID.
 	Sessions(ctx context.Context) (map[string]string, error)
+	// LivePods counts the pods of run sessions that still exist. A deleted
+	// session's pod outlives it briefly.
+	LivePods(ctx context.Context) (int, error)
 }
 
 type Service struct {
@@ -89,9 +95,14 @@ func (s *Service) Start(ctx context.Context, persona, story string) (store.Run, 
 		// A finished run's session may still be alive (failed Stop, deletion in
 		// progress) and could read the next run's token.
 		var sessions map[string]string
-		if sessions, err = s.Launcher.Sessions(ctx); err != nil {
-			err = fmt.Errorf("list sessions: %w", err)
-		} else if len(sessions) > 0 {
+		if sessions, err = s.Launcher.Sessions(ctx); err == nil && len(sessions) > 0 {
+			err = ErrBusy
+		}
+	}
+	if err == nil {
+		// Deleting a Session returns before its pod is gone.
+		var pods int
+		if pods, err = s.Launcher.LivePods(ctx); err == nil && pods > 0 {
 			err = ErrBusy
 		}
 	}
@@ -134,10 +145,10 @@ func find(p project.Project, persona, story string) (role, storyName string, err
 					return r.Name, st.Name, nil
 				}
 			}
-			return "", "", fmt.Errorf("persona %q (role %q) has no story %q", persona, r.Name, story)
+			return "", "", fmt.Errorf("%w: persona %q (role %q) has no story %q", ErrInvalid, persona, r.Name, story)
 		}
 	}
-	return "", "", fmt.Errorf("unknown persona %q", persona)
+	return "", "", fmt.Errorf("%w: unknown persona %q", ErrInvalid, persona)
 }
 
 // Active returns the run for token if it is pending or running.

@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	agentsv1 "github.com/tiny-systems/tiny/api/v1alpha1"
+	"github.com/tiny-systems/tiny/pkg/session"
 
 	"github.com/tiny-systems/boardingparty/internal/project"
 	"github.com/tiny-systems/boardingparty/internal/store"
@@ -17,15 +20,22 @@ import (
 
 const runLabel = "boardingparty.io/run"
 
-var sessionGVK = schema.GroupVersionKind{Group: "agents.tinysystems.io", Version: "v1alpha1", Kind: "Session"}
+// Labels tiny puts on a session's pods (internal/workload): every session pod
+// has app=tiny-session and tinysystems.io/session=<session name>.
+const (
+	podAppLabel   = "app"
+	podAppValue   = "tiny-session"
+	runNamePrefix = "bp-run-"
+)
 
-// Tiny launches runs as tiny Sessions. Sessions are handled as unstructured
-// objects so this module does not depend on tiny's Go types.
+// Tiny launches runs as tiny Sessions. tiny has no manager, so Start creates
+// the Session and its workload (workspace PVC and Deployment) itself through
+// tiny's pkg/session.
 type Tiny struct {
-	Client      client.Client
+	Client      client.Client // scheme must know corev1, appsv1 and agentsv1
 	Namespace   string
 	WorkerImage string
-	DirectorURL string // in-namespace, e.g. http://bp-director:8080
+	DirectorURL string // in-namespace, with a .svc name, e.g. http://bp-director.<ns>.svc:8080
 	Model       string
 }
 
@@ -34,17 +44,11 @@ func sessionName(runID string) string {
 	if len(runID) > 8 {
 		runID = runID[:8]
 	}
-	return "bp-run-" + strings.ToLower(runID)
+	return runNamePrefix + strings.ToLower(runID)
 }
 
 // SessionName implements runs.Launcher.
 func (t *Tiny) SessionName(runID string) string { return sessionName(runID) }
-
-func newSession() *unstructured.Unstructured {
-	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(sessionGVK)
-	return u
-}
 
 func (t *Tiny) Start(ctx context.Context, r store.Run, p project.Project) (string, error) {
 	model := t.Model
@@ -52,67 +56,78 @@ func (t *Tiny) Start(ctx context.Context, r store.Run, p project.Project) (strin
 		model = p.Model
 	}
 	name := sessionName(r.ID)
-	u := newSession()
-	u.SetNamespace(t.Namespace)
-	u.SetName(name)
-	u.SetLabels(map[string]string{runLabel: r.ID})
-	u.Object["spec"] = map[string]any{
-		"task":  Prompt(r),
-		"image": t.WorkerImage,
-		"model": model,
-		"mcpServers": []any{
-			map[string]any{"name": "bp", "url": t.DirectorURL + "/mcp/run/" + r.Token},
-			map[string]any{
-				"name":    "pw",
-				"command": "playwright-mcp",
-				"args": []any{"--headless", "--isolated", "--no-sandbox", "--browser=chromium",
-					"--output-dir=/workspace/out", "--viewport-size=1280x800", "--caps=devtools"},
+	s := &agentsv1.Session{
+		ObjectMeta: metav1.ObjectMeta{Namespace: t.Namespace, Name: name, Labels: map[string]string{runLabel: r.ID}},
+		Spec: agentsv1.SessionSpec{
+			Task:  Prompt(r),
+			Image: t.WorkerImage,
+			Model: model,
+			MCPServers: []agentsv1.MCPServer{
+				{Name: "bp", URL: t.DirectorURL + "/mcp/run/" + r.Token},
+				{
+					Name:    "pw",
+					Command: "playwright-mcp",
+					Args: []string{"--headless", "--isolated", "--no-sandbox", "--browser=chromium",
+						"--output-dir=/workspace/out", "--viewport-size=1280x800", "--caps=devtools"},
+				},
 			},
 		},
 	}
-	if err := t.Client.Create(ctx, u); err != nil {
+	if err := session.Create(ctx, t.Client, s); err != nil {
 		return "", fmt.Errorf("create session %s: %w", name, err)
 	}
 	return name, nil
 }
 
-// Stop deletes the session; a missing session is success.
-func (t *Tiny) Stop(ctx context.Context, session string) error {
-	u := newSession()
-	u.SetNamespace(t.Namespace)
-	u.SetName(session)
-	if err := t.Client.Delete(ctx, u); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete session %s: %w", session, err)
+// Stop deletes the session (its workload goes with it); a missing session is success.
+func (t *Tiny) Stop(ctx context.Context, name string) error {
+	if err := session.Delete(ctx, t.Client, t.Namespace, name); err != nil {
+		return fmt.Errorf("delete session %s: %w", name, err)
 	}
 	return nil
 }
 
 // Phase returns the session's status phase and message, and whether it exists.
-func (t *Tiny) Phase(ctx context.Context, session string) (string, bool, string, error) {
-	u := newSession()
-	err := t.Client.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: session}, u)
+func (t *Tiny) Phase(ctx context.Context, name string) (string, bool, string, error) {
+	s := &agentsv1.Session{}
+	err := t.Client.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: name}, s)
 	if apierrors.IsNotFound(err) {
 		return "", false, "", nil
 	}
 	if err != nil {
-		return "", false, "", fmt.Errorf("get session %s: %w", session, err)
+		return "", false, "", fmt.Errorf("get session %s: %w", name, err)
 	}
-	phase, _, _ := unstructured.NestedString(u.Object, "status", "phase")
-	msg, _, _ := unstructured.NestedString(u.Object, "status", "message")
-	return phase, true, msg, nil
+	return string(s.Status.Phase), true, s.Status.Message, nil
 }
 
 // Sessions lists run sessions (those labelled boardingparty.io/run) as
 // session name -> run ID.
 func (t *Tiny) Sessions(ctx context.Context) (map[string]string, error) {
-	l := &unstructured.UnstructuredList{}
-	l.SetGroupVersionKind(schema.GroupVersionKind{Group: sessionGVK.Group, Version: sessionGVK.Version, Kind: "SessionList"})
+	l := &agentsv1.SessionList{}
 	if err := t.Client.List(ctx, l, client.InNamespace(t.Namespace), client.HasLabels{runLabel}); err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
 	out := make(map[string]string, len(l.Items))
-	for _, u := range l.Items {
-		out[u.GetName()] = u.GetLabels()[runLabel]
+	for _, s := range l.Items {
+		out[s.Name] = s.Labels[runLabel]
 	}
 	return out, nil
+}
+
+// LivePods counts the pods of run sessions that still exist, terminating or
+// not. Deleting a Session returns before its pod is gone (background
+// garbage collection), and a lingering pod can read the next run's token.
+func (t *Tiny) LivePods(ctx context.Context) (int, error) {
+	l := &corev1.PodList{}
+	if err := t.Client.List(ctx, l, client.InNamespace(t.Namespace),
+		client.MatchingLabels{podAppLabel: podAppValue}, client.HasLabels{session.SessionLabel}); err != nil {
+		return 0, fmt.Errorf("list pods: %w", err)
+	}
+	n := 0
+	for _, p := range l.Items {
+		if strings.HasPrefix(p.Labels[session.SessionLabel], runNamePrefix) {
+			n++
+		}
+	}
+	return n, nil
 }

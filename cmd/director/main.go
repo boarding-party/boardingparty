@@ -13,12 +13,18 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
 
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	agentsv1 "github.com/tiny-systems/tiny/api/v1alpha1"
+	"github.com/tiny-systems/tiny/pkg/session"
 
 	"github.com/tiny-systems/boardingparty/internal/api"
 	"github.com/tiny-systems/boardingparty/internal/artifacts"
@@ -38,6 +44,50 @@ type config struct {
 	WorkerAddr       string
 	RunTimeout       time.Duration
 	MaxArtifactBytes int64
+	TinyImageTag     string
+}
+
+const tinyModule = "github.com/tiny-systems/tiny"
+
+// tinyVersion returns the version of the tiny module this binary was built
+// against, from build info ("v0.11.0"); "" when unknown or not a release
+// (a "(devel)" or replaced module).
+func tinyVersion(bi *debug.BuildInfo) string {
+	if bi == nil {
+		return ""
+	}
+	for _, d := range bi.Deps {
+		if d.Path != tinyModule {
+			continue
+		}
+		if d.Replace != nil || d.Version == "(devel)" {
+			return ""
+		}
+		return d.Version
+	}
+	return ""
+}
+
+// imageTag picks the tiny image tag: the build-info version of the tiny
+// module (matching the agent and sidecar images published for that release),
+// else the flag. tiny's SetImageTag accepts "v0.11.0" or "0.11.0" and ignores
+// anything that is not a plain release.
+func imageTag(bi *debug.BuildInfo, flagValue string) string {
+	if v := tinyVersion(bi); v != "" {
+		return v
+	}
+	return flagValue
+}
+
+func newScheme() (*runtime.Scheme, error) {
+	sc := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(sc); err != nil {
+		return nil, err
+	}
+	if err := agentsv1.AddToScheme(sc); err != nil {
+		return nil, err
+	}
+	return sc, nil
 }
 
 // newServers builds the two handlers. The admin one (/api/*) must only be
@@ -76,6 +126,7 @@ func run() error {
 	flag.StringVar(&cfg.WorkerAddr, "worker-addr", ":8080", "worker listen address")
 	flag.DurationVar(&cfg.RunTimeout, "run-timeout", runs.DefaultRunTimeout, "maximum run duration")
 	flag.Int64Var(&cfg.MaxArtifactBytes, "max-artifact-bytes", 500<<20, "maximum artifact size in bytes")
+	flag.StringVar(&cfg.TinyImageTag, "tiny-image-tag", "", "tiny agent/sidecar image tag, used only when build info has no tiny version (e.g. 0.11.0)")
 	flag.Parse()
 
 	if cfg.Namespace == "" {
@@ -94,12 +145,19 @@ func run() error {
 	}
 	defer st.Close()
 
-	// Plain (uncached) client: Sessions are unstructured and must be read live.
+	bi, _ := debug.ReadBuildInfo()
+	session.SetImageTag(imageTag(bi, cfg.TinyImageTag))
+
+	// Plain (uncached) client: Sessions and pods must be read live.
 	restCfg, err := ctrl.GetConfig()
 	if err != nil {
 		return fmt.Errorf("kubernetes config: %w", err)
 	}
-	kc, err := client.New(restCfg, client.Options{})
+	scheme, err := newScheme()
+	if err != nil {
+		return fmt.Errorf("scheme: %w", err)
+	}
+	kc, err := client.New(restCfg, client.Options{Scheme: scheme})
 	if err != nil {
 		return fmt.Errorf("kubernetes client: %w", err)
 	}
