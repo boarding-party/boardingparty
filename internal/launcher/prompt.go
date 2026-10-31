@@ -1,6 +1,6 @@
 package launcher
 
-import "github.com/tiny-systems/boardingparty/internal/store"
+import "github.com/boarding-party/boardingparty/internal/store"
 
 // Prompt is the task text for a run. It is persona-neutral: the agent learns
 // the persona, story and sites from the next_assignment tool.

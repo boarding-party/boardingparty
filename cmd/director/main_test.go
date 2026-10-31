@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tiny-systems/boardingparty/internal/artifacts"
-	"github.com/tiny-systems/boardingparty/internal/project"
-	"github.com/tiny-systems/boardingparty/internal/runs"
-	"github.com/tiny-systems/boardingparty/internal/store"
+	"github.com/boarding-party/boardingparty/internal/artifacts"
+	"github.com/boarding-party/boardingparty/internal/project"
+	"github.com/boarding-party/boardingparty/internal/runs"
+	"github.com/boarding-party/boardingparty/internal/store"
 )
 
 type fakeLauncher struct{}

@@ -4,7 +4,7 @@ Image used by every boardingparty run. A run is one tiny Session (a Kubernetes p
 tiny injects Claude Code, tmux and its entrypoint into this image through an init
 container and overrides the command, so the Dockerfile sets no ENTRYPOINT or CMD.
 
-Target name: `ghcr.io/tiny-systems/boardingparty-worker:<tag>`. Local dev tag: `boardingparty-worker:dev`.
+Target name: `ghcr.io/boarding-party/worker:<tag>`. Local dev tag: `boardingparty-worker:dev`.
 
 ## Contents
 

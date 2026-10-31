@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tiny-systems/boardingparty/internal/runs"
-	"github.com/tiny-systems/boardingparty/internal/store"
+	"github.com/boarding-party/boardingparty/internal/runs"
+	"github.com/boarding-party/boardingparty/internal/store"
 )
 
 const errNotActive = "unknown or finished run"

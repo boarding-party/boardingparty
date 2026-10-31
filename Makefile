@@ -1,4 +1,4 @@
-.PHONY: test build image
+.PHONY: test build image image-director image-worker
 
 test:
 	go test ./...
@@ -6,5 +6,10 @@ test:
 build:
 	go build ./...
 
-image:
+image: image-director image-worker
+
+image-director:
 	docker build -f Dockerfile.director -t boardingparty-director:dev .
+
+image-worker:
+	docker build -t boardingparty-worker:dev worker/

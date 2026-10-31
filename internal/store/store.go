@@ -11,7 +11,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/tiny-systems/boardingparty/internal/project"
+	"github.com/boarding-party/boardingparty/internal/project"
 )
 
 //go:embed schema.sql

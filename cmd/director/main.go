@@ -26,12 +26,12 @@ import (
 	agentsv1 "github.com/tiny-systems/tiny/api/v1alpha1"
 	"github.com/tiny-systems/tiny/pkg/session"
 
-	"github.com/tiny-systems/boardingparty/internal/api"
-	"github.com/tiny-systems/boardingparty/internal/artifacts"
-	"github.com/tiny-systems/boardingparty/internal/launcher"
-	"github.com/tiny-systems/boardingparty/internal/mcpserver"
-	"github.com/tiny-systems/boardingparty/internal/runs"
-	"github.com/tiny-systems/boardingparty/internal/store"
+	"github.com/boarding-party/boardingparty/internal/api"
+	"github.com/boarding-party/boardingparty/internal/artifacts"
+	"github.com/boarding-party/boardingparty/internal/launcher"
+	"github.com/boarding-party/boardingparty/internal/mcpserver"
+	"github.com/boarding-party/boardingparty/internal/runs"
+	"github.com/boarding-party/boardingparty/internal/store"
 )
 
 type config struct {

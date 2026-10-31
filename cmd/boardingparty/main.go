@@ -8,7 +8,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/tiny-systems/boardingparty/internal/cli"
+	"github.com/boarding-party/boardingparty/internal/cli"
 )
 
 func main() {

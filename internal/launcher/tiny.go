@@ -14,8 +14,8 @@ import (
 	agentsv1 "github.com/tiny-systems/tiny/api/v1alpha1"
 	"github.com/tiny-systems/tiny/pkg/session"
 
-	"github.com/tiny-systems/boardingparty/internal/project"
-	"github.com/tiny-systems/boardingparty/internal/store"
+	"github.com/boarding-party/boardingparty/internal/project"
+	"github.com/boarding-party/boardingparty/internal/store"
 )
 
 const runLabel = "boardingparty.io/run"

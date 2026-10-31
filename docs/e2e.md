@@ -8,7 +8,9 @@ run at a time; the director answers 409 while another run is active.
    - default-deny network policy;
    - hostname allow-list: `api.anthropic.com`, `demo.playwright.dev`.
 
-   Then apply the director with the worker image from Task 3 (re-tagged from `spike`):
+   Then apply the director. The manifest pulls `ghcr.io/boarding-party/director:main` and
+   the worker image `ghcr.io/boarding-party/worker:main` (built by CI; for a local build use
+   `make image` and override the tags):
 
    ```
    kubectl apply -f deploy/director.yaml -n bp-todomvc

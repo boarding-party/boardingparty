@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tiny-systems/boardingparty/internal/store"
+	"github.com/boarding-party/boardingparty/internal/store"
 )
 
 var t0 = time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)

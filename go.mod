@@ -1,4 +1,4 @@
-module github.com/tiny-systems/boardingparty
+module github.com/boarding-party/boardingparty
 
 go 1.26.0
 

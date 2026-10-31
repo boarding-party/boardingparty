@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tiny-systems/boardingparty/internal/artifacts"
-	"github.com/tiny-systems/boardingparty/internal/project"
-	"github.com/tiny-systems/boardingparty/internal/store"
+	"github.com/boarding-party/boardingparty/internal/artifacts"
+	"github.com/boarding-party/boardingparty/internal/project"
+	"github.com/boarding-party/boardingparty/internal/store"
 )
 
 // ErrNotActive means the token is unknown or its run has already finished.

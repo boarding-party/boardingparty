@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tiny-systems/boardingparty/internal/project"
+	"github.com/boarding-party/boardingparty/internal/project"
 )
 
 func open(t *testing.T) *Store {

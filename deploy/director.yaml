@@ -74,10 +74,11 @@ spec:
           type: RuntimeDefault
       containers:
         - name: director
-          image: boardingparty-director:dev
+          image: ghcr.io/boarding-party/director:main
+          imagePullPolicy: Always
           args:
             - --data=/data
-            - --worker-image=boardingparty-worker:dev
+            - --worker-image=ghcr.io/boarding-party/worker:main
             - --director-url=http://bp-director.$(POD_NAMESPACE).svc:8080
             - --admin-addr=127.0.0.1:8081
             - --worker-addr=:8080

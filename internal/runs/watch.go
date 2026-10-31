@@ -7,7 +7,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/tiny-systems/boardingparty/internal/store"
+	"github.com/boarding-party/boardingparty/internal/store"
 )
 
 // Watch reconciles active runs every `every` until ctx is cancelled.
