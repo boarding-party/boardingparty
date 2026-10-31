@@ -30,16 +30,27 @@ const (
 )
 
 type Run struct {
-	ID, Token, Persona, Role, Story string
-	State                           RunState
-	Outcome                         string // agent's summary or failure reason
-	Session                         string // tiny Session name
-	Started, Finished               time.Time
+	ID       string    `json:"id"`
+	Token    string    `json:"token"`
+	Persona  string    `json:"persona"`
+	Role     string    `json:"role"`
+	Story    string    `json:"story"`
+	State    RunState  `json:"state"`
+	Outcome  string    `json:"outcome"` // agent's summary or failure reason
+	Session  string    `json:"session"` // tiny Session name
+	Started  time.Time `json:"started"`
+	Finished time.Time `json:"finished"`
 }
 
 type Bug struct {
-	ID, RunID, Summary, Step, Evidence, Severity, Note string
-	Created                                            time.Time
+	ID       string    `json:"id"`
+	RunID    string    `json:"run_id"`
+	Summary  string    `json:"summary"`
+	Step     string    `json:"step"`
+	Evidence string    `json:"evidence"`
+	Severity string    `json:"severity"`
+	Note     string    `json:"note"`
+	Created  time.Time `json:"created"`
 }
 
 type Store struct{ db *sql.DB }
@@ -165,6 +176,18 @@ func (s *Store) UpdateRun(r Run) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// FinishRun atomically moves a pending or running run to a final state.
+// It returns false if the run was not active (already finished or unknown).
+func (s *Store) FinishRun(id string, state RunState, outcome string, finished time.Time) (bool, error) {
+	res, err := s.db.Exec(`UPDATE runs SET state=?, outcome=?, finished=? WHERE id=? AND state IN ('pending','running')`,
+		string(state), outcome, ts(finished), id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 func (s *Store) queryRuns(q string, args ...any) ([]Run, error) {

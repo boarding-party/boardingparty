@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/tiny-systems/boardingparty/internal/artifacts"
@@ -13,6 +14,7 @@ import (
 )
 
 type fakeLauncher struct {
+	mu               sync.Mutex
 	started, stopped []string
 	startErr         error
 }
@@ -26,6 +28,8 @@ func (f *fakeLauncher) Start(_ context.Context, r store.Run, _ project.Project) 
 }
 
 func (f *fakeLauncher) Stop(_ context.Context, session string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.stopped = append(f.stopped, session)
 	return nil
 }
@@ -118,5 +122,45 @@ func TestFinishStopsSession(t *testing.T) {
 	got, _ := svc.Store.RunByToken(r.Token)
 	if got.State != store.RunStuck || got.Outcome != "stuck at pay" || got.Finished.IsZero() {
 		t.Fatalf("run: %+v", got)
+	}
+}
+
+func TestFinishRejectsNonTerminalState(t *testing.T) {
+	svc, fl := newSvc(t)
+	r, _ := svc.Start(context.Background(), "ann", "checkout")
+	for _, st := range []store.RunState{store.RunPending, store.RunRunning, "bogus"} {
+		err := svc.Finish(context.Background(), r.Token, st, "x")
+		if err == nil || errors.Is(err, ErrNotActive) {
+			t.Errorf("state %q: want ErrBadState-like error, got %v", st, err)
+		}
+		if !errors.Is(err, ErrBadState) {
+			t.Errorf("state %q: want ErrBadState, got %v", st, err)
+		}
+	}
+	if _, err := svc.Active(r.Token); err != nil || len(fl.stopped) != 0 {
+		t.Fatalf("run must still be active: %v %v", err, fl.stopped)
+	}
+}
+
+func TestFinishConcurrentOnlyOneWins(t *testing.T) {
+	svc, fl := newSvc(t)
+	r, _ := svc.Start(context.Background(), "ann", "checkout")
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() { errs <- svc.Finish(context.Background(), r.Token, store.RunDone, "ok") }()
+	}
+	var nils, notActive int
+	for i := 0; i < 2; i++ {
+		switch err := <-errs; {
+		case err == nil:
+			nils++
+		case errors.Is(err, ErrNotActive):
+			notActive++
+		default:
+			t.Fatalf("unexpected: %v", err)
+		}
+	}
+	if nils != 1 || notActive != 1 || len(fl.stopped) != 1 {
+		t.Fatalf("nils=%d notActive=%d stopped=%v", nils, notActive, fl.stopped)
 	}
 }

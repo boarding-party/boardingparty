@@ -17,6 +17,9 @@ import (
 // ErrNotActive means the token is unknown or its run has already finished.
 var ErrNotActive = errors.New("run not active")
 
+// ErrBadState means Finish was given a state that is not final.
+var ErrBadState = errors.New("finish state must be done, stuck or failed")
+
 type Launcher interface {
 	Start(ctx context.Context, r store.Run, p project.Project) (session string, err error)
 	Stop(ctx context.Context, session string) error
@@ -107,15 +110,24 @@ func (s *Service) Active(token string) (store.Run, error) {
 	return r, nil
 }
 
-// Finish records the final state and stops the run's session.
+// Finish records the final state and stops the run's session. Only the
+// caller that actually moves the run out of an active state stops the session.
 func (s *Service) Finish(ctx context.Context, token string, state store.RunState, outcome string) error {
+	switch state {
+	case store.RunDone, store.RunStuck, store.RunFailed:
+	default:
+		return fmt.Errorf("%w: got %q", ErrBadState, state)
+	}
 	r, err := s.Active(token)
 	if err != nil {
 		return err
 	}
-	r.State, r.Outcome, r.Finished = state, outcome, time.Now().UTC()
-	if err := s.Store.UpdateRun(r); err != nil {
+	won, err := s.Store.FinishRun(r.ID, state, outcome, time.Now().UTC())
+	if err != nil {
 		return err
+	}
+	if !won {
+		return ErrNotActive
 	}
 	if r.Session == "" {
 		return nil

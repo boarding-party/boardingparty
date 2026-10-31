@@ -65,3 +65,14 @@ func TestPutOpenList(t *testing.T) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }
+
+func TestListSkipsInFlightTempFiles(t *testing.T) {
+	root := t.TempDir()
+	s := NewFS(root, 10)
+	s.Put("run1", "a.txt", strings.NewReader("x"))
+	os.WriteFile(filepath.Join(root, "run1", ".upload-123"), []byte("partial"), 0o644)
+	names, _ := s.List("run1")
+	if len(names) != 1 || names[0] != "a.txt" {
+		t.Fatalf("list: %v", names)
+	}
+}

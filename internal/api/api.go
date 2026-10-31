@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 
 	"github.com/tiny-systems/boardingparty/internal/artifacts"
@@ -21,19 +22,32 @@ type server struct {
 	maxBytes int64
 }
 
-// New returns the HTTP handler. maxBytes <= 0 means MaxArtifactBytes.
-func New(svc *runs.Service, maxBytes int64) http.Handler {
+func normalise(maxBytes int64) int64 {
 	if maxBytes <= 0 {
-		maxBytes = MaxArtifactBytes
+		return MaxArtifactBytes
 	}
-	s := &server{svc: svc, maxBytes: maxBytes}
+	return maxBytes
+}
+
+// Admin is the operator API (/api/*). Serve it on a loopback-only listener;
+// workers must never be able to reach it.
+func Admin(svc *runs.Service, maxBytes int64) http.Handler {
+	s := &server{svc: svc, maxBytes: normalise(maxBytes)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/project", s.putProject)
 	mux.HandleFunc("POST /api/runs", s.startRun)
 	mux.HandleFunc("GET /api/runs", s.listRuns)
 	mux.HandleFunc("GET /api/runs/{id}", s.getRun)
 	mux.HandleFunc("GET /api/runs/{id}/artifacts/{name}", s.getArtifact)
+	return mux
+}
+
+// Worker is the surface reachable by worker pods: artifact upload and health only.
+func Worker(svc *runs.Service, maxBytes int64) http.Handler {
+	s := &server{svc: svc, maxBytes: normalise(maxBytes)}
+	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /artifacts/{token}/{name}", s.putArtifact)
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	return mux
 }
 
@@ -52,6 +66,7 @@ func fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, artifacts.ErrTooLarge):
 		http.Error(w, "too large", http.StatusRequestEntityTooLarge)
 	default:
+		log.Printf("api: internal error: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
 }
@@ -75,7 +90,10 @@ func (s *server) putProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) startRun(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Persona, Story string }
+	var req struct {
+		Persona string `json:"persona"`
+		Story   string `json:"story"`
+	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
@@ -84,11 +102,12 @@ func (s *server) startRun(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Unknown persona/story is a client error; a launcher failure still
 		// leaves a failed run behind (run.ID set).
-		code := http.StatusBadRequest
 		if run.ID != "" {
-			code = http.StatusBadGateway
+			log.Printf("api: start run %s: %v", run.ID, err)
+			http.Error(w, "failed to launch run", http.StatusBadGateway)
+			return
 		}
-		http.Error(w, err.Error(), code)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, http.StatusCreated, run)
@@ -133,7 +152,7 @@ func (s *server) getRun(w http.ResponseWriter, r *http.Request) {
 	if names == nil {
 		names = []string{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"Run": redact(run), "Bugs": bugs, "Artifacts": names})
+	writeJSON(w, http.StatusOK, map[string]any{"run": redact(run), "bugs": bugs, "artifacts": names})
 }
 
 func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {

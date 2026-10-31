@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 var (
@@ -22,8 +23,11 @@ var namePattern = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
 
 // validName also rejects "." and ".." which the pattern alone would allow.
 func validName(n string) bool {
-	return namePattern.MatchString(n) && n != "." && n != ".."
+	return namePattern.MatchString(n) && n != "." && n != ".." && !strings.HasPrefix(n, tmpPrefix)
 }
+
+// tmpPrefix marks in-flight uploads; such names are never valid artifacts.
+const tmpPrefix = ".upload-"
 
 type Store interface {
 	Put(runID, name string, r io.Reader) (int64, error)
@@ -47,7 +51,7 @@ func (f *fs) Put(runID, name string, r io.Reader) (int64, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return 0, err
 	}
-	tmp, err := os.CreateTemp(dir, ".upload-*")
+	tmp, err := os.CreateTemp(dir, tmpPrefix+"*")
 	if err != nil {
 		return 0, err
 	}
