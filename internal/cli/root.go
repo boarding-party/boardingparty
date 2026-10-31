@@ -43,7 +43,7 @@ func (g *globals) connect(ctx context.Context) (*client, func(), error) {
 // NewRoot builds the root command.
 func NewRoot() *cobra.Command {
 	g := &globals{}
-	root := &cobra.Command{Use: "boardingparty", Short: "Drive boardingparty test runs on your cluster", SilenceUsage: true}
+	root := &cobra.Command{Use: "boardingparty", Short: "Drive boardingparty test runs on your cluster", SilenceUsage: true, SilenceErrors: true}
 	root.PersistentFlags().StringVar(&g.kubeContext, "context", "", "kubeconfig context (default: current)")
 	root.PersistentFlags().StringVarP(&g.namespace, "namespace", "n", "", "director namespace (default: the context's namespace, else default)")
 	root.AddCommand(newApply(g), newRun(g), newRuns(g), newGet(g))

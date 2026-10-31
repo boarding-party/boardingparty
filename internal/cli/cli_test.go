@@ -211,3 +211,67 @@ func TestWaitGivesUpAfterThreeConsecutiveErrors(t *testing.T) {
 		t.Fatalf("want poll error, got %v", err)
 	}
 }
+
+func runWithPolls(t *testing.T, script []string) error {
+	t.Helper()
+	setPoll(t)
+	var n atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/runs", func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(Run{ID: "r1"}) })
+	mux.HandleFunc("GET /api/runs/r1", func(w http.ResponseWriter, r *http.Request) {
+		i := int(n.Add(1)) - 1
+		step := "done"
+		if i < len(script) {
+			step = script[i]
+		}
+		if step == "fail" {
+			http.Error(w, "down", http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(RunDetail{Run: Run{ID: "r1", State: step}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	return runAndWait(context.Background(), newClient(srv.URL), &bytes.Buffer{}, "a", "b", true, time.Minute)
+}
+
+func TestPollToleranceBoundary(t *testing.T) {
+	if err := runWithPolls(t, []string{"fail", "fail", "fail", "done"}); err != nil {
+		t.Errorf("3 failures then done: %v", err)
+	}
+	if err := runWithPolls(t, []string{"fail", "fail", "fail", "fail", "done"}); err == nil {
+		t.Error("4 failures should error")
+	}
+}
+
+func TestPollErrorCountResets(t *testing.T) {
+	if err := runWithPolls(t, []string{"fail", "fail", "running", "fail", "fail", "done"}); err != nil {
+		t.Errorf("reset: %v", err)
+	}
+}
+
+func TestErrorTextIsSanitised(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad \x1b[31mred\u009b2J", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	_, err := newClient(srv.URL).Runs(context.Background())
+	if err == nil {
+		t.Fatal("want error")
+	}
+	got := FormatError(err)
+	if strings.ContainsAny(got, "\x1b\x9b") || strings.ContainsRune(got, '\u009b') {
+		t.Errorf("control chars in %q", got)
+	}
+	if !strings.Contains(got, "bad ?[31mred?2J") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestRunsTableTabsDoNotShiftColumns(t *testing.T) {
+	var buf bytes.Buffer
+	formatRuns(&buf, []Run{{ID: "r1", Persona: "a\tb", Story: "s", State: "done", Outcome: "x\ty"}}, time.Now())
+	if strings.Count(strings.Split(buf.String(), "\n")[1], "\t") != 0 {
+		t.Errorf("tab leaked: %q", buf.String())
+	}
+}

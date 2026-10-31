@@ -20,7 +20,7 @@ func main() {
 		os.Exit(ee.Code)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, "error:", cli.FormatError(err))
 		os.Exit(1)
 	}
 }

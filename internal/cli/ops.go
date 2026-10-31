@@ -28,10 +28,16 @@ func formatRuns(w io.Writer, runs []Run, now time.Time) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tPERSONA\tSTORY\tSTATE\tAGE\tOUTCOME")
 	for _, r := range runs {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", clean(r.ID), clean(r.Persona), clean(r.Story), clean(r.State), age(now, r.Started), clean(oneLine(r.Outcome)))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", cell(r.ID), cell(r.Persona), cell(r.Story), cell(r.State), age(now, r.Started), clean(oneLine(r.Outcome)))
 	}
 	tw.Flush()
 }
+
+// cell cleans a table cell; tabs would shift tabwriter columns.
+func cell(s string) string { return clean(strings.ReplaceAll(s, "\t", " ")) }
+
+// FormatError returns err's text safe to print to a terminal.
+func FormatError(err error) string { return clean(err.Error()) }
 
 func age(now, t time.Time) string {
 	if t.IsZero() {
@@ -50,6 +56,7 @@ func age(now, t time.Time) string {
 }
 
 func oneLine(s string) string {
+	s = strings.ReplaceAll(s, "\t", " ")
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) > 80 {
 		s = s[:77] + "..."
@@ -73,14 +80,14 @@ func waitRun(ctx context.Context, c *client, id string, every time.Duration) (Ru
 			if fails > maxPollErrors || ctx.Err() != nil {
 				return Run{}, err
 			}
-			fmt.Fprintf(os.Stderr, "poll error (%d/%d): %v\n", fails, maxPollErrors, err)
+			fmt.Fprintf(os.Stderr, "poll error (%d/%d): %s\n", fails, maxPollErrors, clean(err.Error()))
 			d = RunDetail{}
 		} else if fails = 0; terminal(d.Run.State) {
 			return d.Run, nil
 		}
 		select {
 		case <-ctx.Done():
-			return d.Run, fmt.Errorf("timed out waiting for run %s (state %s)", id, d.Run.State)
+			return d.Run, fmt.Errorf("timed out waiting for run %s (state %s)", clean(id), clean(d.Run.State))
 		case <-time.After(every):
 		}
 	}

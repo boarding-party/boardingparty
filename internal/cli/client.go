@@ -68,7 +68,7 @@ func (c *client) do(ctx context.Context, method, path string, body io.Reader, ct
 	if resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("director: %s: %s", resp.Status, clean(strings.TrimSpace(string(msg))))
+		return nil, fmt.Errorf("director: %s: %s", clean(resp.Status), clean(strings.TrimSpace(string(msg))))
 	}
 	return resp, nil
 }
