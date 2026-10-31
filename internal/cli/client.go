@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Run mirrors the director's run JSON. Token is only ever set by StartRun.
+// Run mirrors the director's run JSON. Token is always empty: the director redacts it.
 type Run struct {
 	ID       string    `json:"id"`
 	Token    string    `json:"token,omitempty"`
@@ -91,7 +91,7 @@ func (c *client) PutProject(ctx context.Context, yaml []byte) error {
 	return resp.Body.Close()
 }
 
-// StartRun starts a run and returns it (including its token).
+// StartRun starts a run and returns it (the token is redacted by the director).
 func (c *client) StartRun(ctx context.Context, persona, story string) (Run, error) {
 	b, _ := json.Marshal(map[string]string{"persona": persona, "story": story})
 	resp, err := c.do(ctx, http.MethodPost, "/api/runs", bytes.NewReader(b), "application/json")

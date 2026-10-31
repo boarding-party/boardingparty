@@ -1,6 +1,6 @@
 name: todomvc
 sites:
-  - https://todomvc.com/examples/react/dist/
+  - https://demo.playwright.dev/todomvc
 roles:
   - name: visitor
     description: Someone using the app for the first time, with no account.

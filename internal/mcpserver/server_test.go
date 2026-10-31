@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tiny-systems/boardingparty/internal/artifacts"
@@ -26,6 +27,8 @@ func (f *fakeLauncher) Stop(context.Context, string) error { return nil }
 func (f *fakeLauncher) Phase(context.Context, string) (string, bool, string, error) {
 	return "Running", true, "", nil
 }
+
+func (f *fakeLauncher) Sessions(context.Context) (map[string]string, error) { return nil, nil }
 
 const director = "http://director.test"
 
@@ -199,5 +202,72 @@ func TestFinishRejectsBadOutcome(t *testing.T) {
 	r, _ := st.RunByID(run.ID)
 	if r.State != store.RunRunning {
 		t.Errorf("state %s", r.State)
+	}
+}
+
+// Two active runs for two personas: each token only ever touches its own
+// persona state, bugs and run state. Runs are created in the store directly
+// because Service.Start allows only one active run at a time.
+func TestCrossRunIsolation(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "bp.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	p := project.Project{Name: "p", Sites: []string{"https://x.test"}, Roles: []project.Role{{
+		Name:     "buyer",
+		Personas: []project.Persona{{Name: "ann"}, {Name: "bob"}},
+		Stories:  []project.Story{{Name: "checkout", Goal: "buy a thing"}},
+	}}}
+	if err := st.PutProject(p); err != nil {
+		t.Fatal(err)
+	}
+	svc := &runs.Service{Store: st, Artifacts: artifacts.NewFS(t.TempDir(), 1024), Launcher: &fakeLauncher{}}
+	mk := func(id, token, persona string) store.Run {
+		r := store.Run{ID: id, Token: token, Persona: persona, Role: "buyer", Story: "checkout",
+			State: store.RunRunning, Session: "sess-" + id, Started: time.Now().UTC()}
+		if err := st.CreateRun(r); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	a, b := mk("run-a", "token-a", "ann"), mk("run-b", "token-b", "bob")
+	if err := st.SavePersonaState("bob", json.RawMessage(`{"owner":"bob"}`)); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(Handler(svc, st, director))
+	t.Cleanup(srv.Close)
+
+	cs := connect(t, srv, a.Token)
+	if text, isErr := call(t, cs, "persona_save", map[string]any{"state": map[string]any{"owner": "ann"}}); isErr {
+		t.Fatalf("persona_save: %s", text)
+	}
+	if text, isErr := call(t, cs, "report_bug", map[string]any{
+		"summary": "bug for A", "step": "1", "evidence": "e", "severity_guess": "low", "note": "n"}); isErr {
+		t.Fatalf("report_bug: %s", text)
+	}
+	if text, isErr := call(t, cs, "finish_run", map[string]any{"outcome": "done", "summary": "A done"}); isErr {
+		t.Fatalf("finish_run: %s", text)
+	}
+
+	if s, _ := st.PersonaState("ann"); string(s) != `{"owner":"ann"}` {
+		t.Errorf("ann state = %s", s)
+	}
+	if s, _ := st.PersonaState("bob"); string(s) != `{"owner":"bob"}` {
+		t.Errorf("bob state touched by run A: %s", s)
+	}
+	if bugs, _ := st.Bugs(b.ID); len(bugs) != 0 {
+		t.Errorf("run B has bugs from run A: %+v", bugs)
+	}
+	if bugs, _ := st.Bugs(a.ID); len(bugs) != 1 {
+		t.Errorf("run A bugs = %+v", bugs)
+	}
+	ra, _ := st.RunByID(a.ID)
+	rb, _ := st.RunByID(b.ID)
+	if ra.State != store.RunDone {
+		t.Errorf("run A state %s", ra.State)
+	}
+	if rb.State != store.RunRunning || rb.Outcome != "" {
+		t.Errorf("run B affected: %+v", rb)
 	}
 }

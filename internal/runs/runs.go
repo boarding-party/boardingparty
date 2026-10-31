@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/tiny-systems/boardingparty/internal/artifacts"
@@ -23,6 +24,10 @@ const (
 
 var ErrNotActive = errors.New("run not active")
 
+// ErrBusy means another run is pending or running. Plan 1 runs one at a time
+// because a session can read every other session's spec (and so its token).
+var ErrBusy = errors.New("another run is active; Plan 1 runs one at a time")
+
 // ErrBadState means Finish was given a state that is not final.
 var ErrBadState = errors.New("finish state must be done, stuck or failed")
 
@@ -35,12 +40,16 @@ type Launcher interface {
 	// Phase reports the session's phase (Pending, Running, Done, Failed), whether
 	// it still exists, and its status message.
 	Phase(ctx context.Context, session string) (phase string, exists bool, message string, err error)
+	// Sessions lists the run sessions that exist, as session name -> run ID.
+	Sessions(ctx context.Context) (map[string]string, error)
 }
 
 type Service struct {
 	Store     *store.Store
 	Artifacts artifacts.Store
 	Launcher  Launcher
+
+	startMu sync.Mutex // makes the one-active-run check and CreateRun atomic
 }
 
 func randHex(n int) (string, error) {
@@ -71,7 +80,16 @@ func (s *Service) Start(ctx context.Context, persona, story string) (store.Run, 
 	}
 	r := store.Run{ID: id, Token: token, Persona: persona, Role: role, Story: st,
 		State: store.RunPending, Started: time.Now().UTC()}
-	if err := s.Store.CreateRun(r); err != nil {
+	s.startMu.Lock()
+	active, err := s.Store.ActiveRuns()
+	if err == nil && len(active) > 0 {
+		err = ErrBusy
+	}
+	if err == nil {
+		err = s.Store.CreateRun(r)
+	}
+	s.startMu.Unlock()
+	if err != nil {
 		return store.Run{}, err
 	}
 	session, err := s.Launcher.Start(ctx, r, p)

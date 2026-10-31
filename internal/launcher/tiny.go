@@ -15,6 +15,8 @@ import (
 	"github.com/tiny-systems/boardingparty/internal/store"
 )
 
+const runLabel = "boardingparty.io/run"
+
 var sessionGVK = schema.GroupVersionKind{Group: "agents.tinysystems.io", Version: "v1alpha1", Kind: "Session"}
 
 // Tiny launches runs as tiny Sessions. Sessions are handled as unstructured
@@ -44,16 +46,20 @@ func newSession() *unstructured.Unstructured {
 	return u
 }
 
-func (t *Tiny) Start(ctx context.Context, r store.Run, _ project.Project) (string, error) {
+func (t *Tiny) Start(ctx context.Context, r store.Run, p project.Project) (string, error) {
+	model := t.Model
+	if p.Model != "" {
+		model = p.Model
+	}
 	name := sessionName(r.ID)
 	u := newSession()
 	u.SetNamespace(t.Namespace)
 	u.SetName(name)
-	u.SetLabels(map[string]string{"boardingparty.io/run": r.ID})
+	u.SetLabels(map[string]string{runLabel: r.ID})
 	u.Object["spec"] = map[string]any{
 		"task":  Prompt(r),
 		"image": t.WorkerImage,
-		"model": t.Model,
+		"model": model,
 		"mcpServers": []any{
 			map[string]any{"name": "bp", "url": t.DirectorURL + "/mcp/run/" + r.Token},
 			map[string]any{
@@ -94,4 +100,19 @@ func (t *Tiny) Phase(ctx context.Context, session string) (string, bool, string,
 	phase, _, _ := unstructured.NestedString(u.Object, "status", "phase")
 	msg, _, _ := unstructured.NestedString(u.Object, "status", "message")
 	return phase, true, msg, nil
+}
+
+// Sessions lists run sessions (those labelled boardingparty.io/run) as
+// session name -> run ID.
+func (t *Tiny) Sessions(ctx context.Context) (map[string]string, error) {
+	l := &unstructured.UnstructuredList{}
+	l.SetGroupVersionKind(schema.GroupVersionKind{Group: sessionGVK.Group, Version: sessionGVK.Version, Kind: "SessionList"})
+	if err := t.Client.List(ctx, l, client.InNamespace(t.Namespace), client.HasLabels{runLabel}); err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	out := make(map[string]string, len(l.Items))
+	for _, u := range l.Items {
+		out[u.GetName()] = u.GetLabels()[runLabel]
+	}
+	return out, nil
 }

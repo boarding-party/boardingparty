@@ -160,3 +160,31 @@ func TestReconcileUnknownPhasePastTimeoutFails(t *testing.T) {
 		t.Errorf("got %s %q", r.State, r.Outcome)
 	}
 }
+
+func TestReconcileReapsTerminalAndUnknownSessions(t *testing.T) {
+	svc, fl := newSvc(t)
+	seed(t, svc, "done1", store.RunDone, "s-done", time.Hour)
+	seed(t, svc, "stuck1", store.RunStuck, "s-stuck", time.Hour)
+	seed(t, svc, "fail1", store.RunFailed, "s-fail", time.Hour)
+	seed(t, svc, "live1", store.RunRunning, "s-live", time.Minute)
+	fl.phases = map[string]phaseInfo{"s-live": {"Running", ""}}
+	fl.sessions = map[string]string{
+		"s-done": "done1", "s-stuck": "stuck1", "s-fail": "fail1",
+		"s-live": "live1", "s-orphan": "nosuchrun",
+	}
+	if err := svc.Reconcile(context.Background(), t0, 20*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, s := range fl.stopped {
+		got[s] = true
+	}
+	for _, want := range []string{"s-done", "s-stuck", "s-fail", "s-orphan"} {
+		if !got[want] {
+			t.Errorf("%s not reaped (stopped %v)", want, fl.stopped)
+		}
+	}
+	if got["s-live"] {
+		t.Errorf("active run's session was stopped")
+	}
+}

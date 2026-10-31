@@ -134,3 +134,41 @@ func TestPromptMentionsFinishAndNoPolling(t *testing.T) {
 		}
 	}
 }
+
+func specModel(t *testing.T, tn *Tiny, p project.Project) any {
+	t.Helper()
+	name, err := tn.Start(context.Background(), store.Run{ID: "cccccccc11", Token: "t"}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, _, _ := unstructured.NestedMap(getSession(t, tn, name).Object, "spec")
+	return spec["model"]
+}
+
+func TestProjectModelOverridesDefault(t *testing.T) {
+	if m := specModel(t, newTiny(), project.Project{Model: "claude-haiku-5"}); m != "claude-haiku-5" {
+		t.Errorf("override: model = %v", m)
+	}
+	if m := specModel(t, newTiny(), project.Project{}); m != "claude-sonnet-5-5" {
+		t.Errorf("default: model = %v", m)
+	}
+}
+
+func TestSessionsListsLabelledSessionsOnly(t *testing.T) {
+	tn := newTiny()
+	n1, _ := tn.Start(context.Background(), store.Run{ID: "dddddddd11", Token: "t"}, project.Project{})
+	n2, _ := tn.Start(context.Background(), store.Run{ID: "eeeeeeee22", Token: "t"}, project.Project{})
+	other := newSession()
+	other.SetNamespace("bp")
+	other.SetName("unrelated")
+	if err := tn.Client.Create(context.Background(), other); err != nil {
+		t.Fatal(err)
+	}
+	got, err := tn.Sessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[n1] != "dddddddd11" || got[n2] != "eeeeeeee22" {
+		t.Errorf("sessions = %v", got)
+	}
+}

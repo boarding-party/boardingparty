@@ -20,6 +20,13 @@ type fakeLauncher struct {
 	startErr         error
 	onStart          func(store.Run)
 	phases           map[string]phaseInfo // by session; missing = session gone
+	sessions         map[string]string    // session -> run ID, as listed by Sessions
+}
+
+func (f *fakeLauncher) Sessions(context.Context) (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sessions, nil
 }
 
 type phaseInfo struct{ phase, msg string }
@@ -199,5 +206,26 @@ func TestStartWhenFinishedDuringLaunchStopsSession(t *testing.T) {
 	}
 	if len(fl.stopped) != 1 || fl.stopped[0] != "sess-"+r.ID {
 		t.Errorf("stopped = %v", fl.stopped)
+	}
+}
+
+func TestStartRefusesWhileAnotherRunActive(t *testing.T) {
+	svc, fl := newSvc(t)
+	first, err := svc.Start(context.Background(), "ann", "checkout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Start(context.Background(), "ann", "checkout"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("second start: %v, want ErrBusy", err)
+	}
+	if len(fl.started) != 1 {
+		t.Errorf("launcher started %v", fl.started)
+	}
+	// Finishing the first run frees the slot.
+	if err := svc.Finish(context.Background(), first.Token, store.RunDone, "ok"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Start(context.Background(), "ann", "checkout"); err != nil {
+		t.Fatalf("start after finish: %v", err)
 	}
 }

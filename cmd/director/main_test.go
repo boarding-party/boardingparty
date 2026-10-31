@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,6 +26,8 @@ func (fakeLauncher) Stop(context.Context, string) error { return nil }
 func (fakeLauncher) Phase(context.Context, string) (string, bool, string, error) {
 	return "Running", true, "", nil
 }
+
+func (fakeLauncher) Sessions(context.Context) (map[string]string, error) { return nil, nil }
 
 func do(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -73,5 +76,25 @@ func TestServerRoutes(t *testing.T) {
 	body := `{"persona":"` + p.Roles[0].Personas[0].Name + `","story":"` + p.Roles[0].Stories[0].Name + `"}`
 	if rec := do(t, admin, "POST", "/api/runs", body); rec.Code != 201 {
 		t.Fatalf("admin POST /api/runs = %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestDefaultDirectorURLIsSvcName(t *testing.T) {
+	got := defaultDirectorURL("bp-todomvc")
+	if got != "http://bp-director.bp-todomvc.svc:8080" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestServeReturnsListenerError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	good := &http.Server{Addr: "127.0.0.1:0", Handler: http.NotFoundHandler()}
+	busy := &http.Server{Addr: ln.Addr().String(), Handler: http.NotFoundHandler()}
+	if err := serve(context.Background(), []*http.Server{good, busy}); err == nil {
+		t.Fatal("serve returned nil despite a listener failure")
 	}
 }

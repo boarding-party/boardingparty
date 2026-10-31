@@ -52,7 +52,7 @@ func runAndWait(ctx context.Context, c *client, out io.Writer, persona, story st
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "run %s started (token %s)\n", clean(r.ID), clean(r.Token))
+	fmt.Fprintf(out, "run %s started\n", clean(r.ID))
 	if !wait {
 		return nil
 	}

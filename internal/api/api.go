@@ -61,6 +61,8 @@ func fail(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound), errors.Is(err, artifacts.ErrNotFound), errors.Is(err, runs.ErrNotActive):
 		http.Error(w, "not found", http.StatusNotFound)
+	case errors.Is(err, runs.ErrBusy):
+		http.Error(w, runs.ErrBusy.Error(), http.StatusConflict)
 	case errors.Is(err, artifacts.ErrBadName):
 		http.Error(w, "bad name", http.StatusBadRequest)
 	case errors.Is(err, artifacts.ErrTooLarge):
@@ -100,6 +102,10 @@ func (s *server) startRun(w http.ResponseWriter, r *http.Request) {
 	}
 	run, err := s.svc.Start(r.Context(), req.Persona, req.Story)
 	if err != nil {
+		if errors.Is(err, runs.ErrBusy) {
+			fail(w, err)
+			return
+		}
 		// Unknown persona/story is a client error; a launcher failure still
 		// leaves a failed run behind (run.ID set).
 		if run.ID != "" {
@@ -110,7 +116,7 @@ func (s *server) startRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	writeJSON(w, http.StatusCreated, run)
+	writeJSON(w, http.StatusCreated, redact(run))
 }
 
 // redact hides the worker token from read endpoints.

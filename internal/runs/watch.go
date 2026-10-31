@@ -60,6 +60,34 @@ func (s *Service) Reconcile(ctx context.Context, now time.Time, timeout time.Dur
 			}
 		}
 	}
+	if err := s.reap(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// reap stops run sessions whose run is finished or unknown to the store, so a
+// failed Stop never leaks a session for good.
+func (s *Service) reap(ctx context.Context) error {
+	sessions, err := s.Launcher.Sessions(ctx)
+	if err != nil {
+		return fmt.Errorf("list sessions: %w", err)
+	}
+	var errs []error
+	for session, runID := range sessions {
+		r, err := s.Store.RunByID(runID)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+		case err != nil:
+			errs = append(errs, fmt.Errorf("run %s: %w", runID, err))
+			continue
+		case r.State != store.RunDone && r.State != store.RunStuck && r.State != store.RunFailed:
+			continue
+		}
+		if err := s.Launcher.Stop(ctx, session); err != nil {
+			errs = append(errs, fmt.Errorf("reap session %s: %w", session, err))
+		}
+	}
 	return errors.Join(errs...)
 }
 

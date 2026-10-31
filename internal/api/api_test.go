@@ -28,6 +28,8 @@ func (noopLauncher) Phase(context.Context, string) (string, bool, string, error)
 	return "Running", true, "", nil
 }
 
+func (noopLauncher) Sessions(context.Context) (map[string]string, error) { return nil, nil }
+
 const projYAML = `name: p
 sites: ["https://x.test"]
 roles:
@@ -68,7 +70,9 @@ func do(t *testing.T, method, url, body string) *http.Response {
 	return resp
 }
 
-func startRun(t *testing.T, srv *httptest.Server) store.Run {
+// startRun starts a run through the API and returns it with its token read
+// from the store (the API response redacts it).
+func startRun(t *testing.T, srv *httptest.Server, svc *runs.Service) store.Run {
 	t.Helper()
 	if r := do(t, "POST", srv.URL+"/api/project", projYAML); r.StatusCode != 204 {
 		t.Fatalf("project: %d", r.StatusCode)
@@ -81,7 +85,11 @@ func startRun(t *testing.T, srv *httptest.Server) store.Run {
 	if err := json.NewDecoder(resp.Body).Decode(&run); err != nil {
 		t.Fatal(err)
 	}
-	return run
+	full, err := svc.Store.RunByID(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return full
 }
 
 func TestWorkerUploadNeedsActiveToken(t *testing.T) {
@@ -89,7 +97,7 @@ func TestWorkerUploadNeedsActiveToken(t *testing.T) {
 	if r := do(t, "PUT", w.URL+"/artifacts/deadbeef/a.png", "x"); r.StatusCode != 404 {
 		t.Errorf("random token: %d", r.StatusCode)
 	}
-	run := startRun(t, srv)
+	run := startRun(t, srv, svc)
 	if r := do(t, "PUT", w.URL+"/artifacts/"+run.Token+"/a.png", "x"); r.StatusCode != 201 {
 		t.Errorf("active: %d", r.StatusCode)
 	}
@@ -102,24 +110,24 @@ func TestWorkerUploadNeedsActiveToken(t *testing.T) {
 }
 
 func TestUploadOversizeIs413(t *testing.T) {
-	srv, w, _ := setupBoth(t, 10)
-	run := startRun(t, srv)
+	srv, w, svc := setupBoth(t, 10)
+	run := startRun(t, srv, svc)
 	if r := do(t, "PUT", w.URL+"/artifacts/"+run.Token+"/a.png", strings.Repeat("x", 11)); r.StatusCode != 413 {
 		t.Errorf("oversize: %d", r.StatusCode)
 	}
 }
 
 func TestBadNameIs400(t *testing.T) {
-	srv, w, _ := setupBoth(t, 1024)
-	run := startRun(t, srv)
+	srv, w, svc := setupBoth(t, 1024)
+	run := startRun(t, srv, svc)
 	if r := do(t, "PUT", w.URL+"/artifacts/"+run.Token+"/Bad", "x"); r.StatusCode != 400 {
 		t.Errorf("bad name: %d", r.StatusCode)
 	}
 }
 
 func TestRunsReadEndpoints(t *testing.T) {
-	srv, w, _ := setupBoth(t, 1024)
-	run := startRun(t, srv)
+	srv, w, svc := setupBoth(t, 1024)
+	run := startRun(t, srv, svc)
 	do(t, "PUT", w.URL+"/artifacts/"+run.Token+"/a.txt", "hello")
 
 	resp := do(t, "GET", srv.URL+"/api/runs", "")
@@ -160,16 +168,16 @@ func TestRunsReadEndpoints(t *testing.T) {
 }
 
 func TestAdminDoesNotServeWorkerUpload(t *testing.T) {
-	srv, _, _ := setupBoth(t, 1024)
-	run := startRun(t, srv)
+	srv, _, svc := setupBoth(t, 1024)
+	run := startRun(t, srv, svc)
 	if r := do(t, "PUT", srv.URL+"/artifacts/"+run.Token+"/a.png", "x"); r.StatusCode != 404 && r.StatusCode != 405 {
 		t.Errorf("admin served upload: %d", r.StatusCode)
 	}
 }
 
 func TestWorkerServesNoAPI(t *testing.T) {
-	srv, w, _ := setupBoth(t, 1024)
-	run := startRun(t, srv)
+	srv, w, svc := setupBoth(t, 1024)
+	run := startRun(t, srv, svc)
 	for _, c := range []struct{ method, path string }{
 		{"POST", "/api/project"}, {"POST", "/api/runs"}, {"GET", "/api/runs"},
 		{"GET", "/api/runs/" + run.ID}, {"GET", "/api/runs/" + run.ID + "/artifacts/a.txt"},
@@ -198,4 +206,31 @@ type failLauncher struct{ noopLauncher }
 
 func (failLauncher) Start(context.Context, store.Run, project.Project) (string, error) {
 	return "", errors.New("secret-detail")
+}
+
+func TestStartRunBusyIs409AndTokenRedacted(t *testing.T) {
+	srv, _ := setup(t, 1024)
+	if r := do(t, "POST", srv.URL+"/api/project", projYAML); r.StatusCode != 204 {
+		t.Fatalf("project: %d", r.StatusCode)
+	}
+	resp := do(t, "POST", srv.URL+"/api/runs", `{"persona":"ann","story":"checkout"}`)
+	if resp.StatusCode != 201 {
+		t.Fatalf("start: %d", resp.StatusCode)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	var run store.Run
+	if err := json.Unmarshal(b, &run); err != nil {
+		t.Fatal(err)
+	}
+	if run.Token != "" {
+		t.Errorf("start response leaks token: %s", b)
+	}
+	resp = do(t, "POST", srv.URL+"/api/runs", `{"persona":"ann","story":"checkout"}`)
+	if resp.StatusCode != 409 {
+		t.Fatalf("second start: %d, want 409", resp.StatusCode)
+	}
+	b, _ = io.ReadAll(resp.Body)
+	if !strings.Contains(string(b), "another run is active") {
+		t.Errorf("message: %s", b)
+	}
 }

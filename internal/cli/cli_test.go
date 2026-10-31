@@ -275,3 +275,10 @@ func TestRunsTableTabsDoNotShiftColumns(t *testing.T) {
 		t.Errorf("tab leaked: %q", buf.String())
 	}
 }
+
+func TestCleanStripsFormatChars(t *testing.T) {
+	in := "a\u202Eb\u200Bc\u2066d\te"
+	if got, want := clean(in), "a?b?c?d\te"; got != want {
+		t.Errorf("clean = %q, want %q", got, want)
+	}
+}

@@ -12,11 +12,12 @@ import (
 	"unicode"
 )
 
-// clean replaces control runes (C0, DEL, C1) except tab with '?', so
-// server-supplied text cannot inject terminal escape sequences.
+// clean replaces control runes (C0, DEL, C1) except tab, and Unicode format
+// characters (e.g. bidi overrides), with '?', so server-supplied text cannot
+// inject terminal escape sequences or reorder what the operator reads.
 func clean(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r != '\t' && unicode.IsControl(r) {
+		if (r != '\t' && unicode.IsControl(r)) || unicode.Is(unicode.Cf, r) {
 			return '?'
 		}
 		return r

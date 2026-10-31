@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -49,12 +51,26 @@ func newServers(cfg config, svc *runs.Service, st *store.Store) (admin, worker h
 	return admin, mux
 }
 
+// defaultDirectorURL is the in-cluster URL workers use. It must be a .svc
+// name: tiny's egress proxy only bypasses .svc and .cluster.local hosts, so a
+// bare service name would be proxied and refused.
+func defaultDirectorURL(namespace string) string {
+	return "http://bp-director." + namespace + ".svc:8080"
+}
+
 func main() {
+	if err := run(); err != nil {
+		log.Print(err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	var cfg config
 	flag.StringVar(&cfg.Data, "data", "/data", "data directory (SQLite + artifacts)")
 	flag.StringVar(&cfg.Namespace, "namespace", os.Getenv("POD_NAMESPACE"), "namespace for run Sessions (default $POD_NAMESPACE)")
 	flag.StringVar(&cfg.WorkerImage, "worker-image", "", "worker image for run Sessions")
-	flag.StringVar(&cfg.DirectorURL, "director-url", "http://bp-director:8080", "in-cluster URL workers use to reach the director")
+	flag.StringVar(&cfg.DirectorURL, "director-url", "", "in-cluster URL workers use to reach the director (default http://bp-director.<namespace>.svc:8080)")
 	flag.StringVar(&cfg.Model, "model", "", "default model for runs")
 	flag.StringVar(&cfg.AdminAddr, "admin-addr", "127.0.0.1:8081", "admin API listen address (keep on loopback)")
 	flag.StringVar(&cfg.WorkerAddr, "worker-addr", ":8080", "worker listen address")
@@ -63,22 +79,29 @@ func main() {
 	flag.Parse()
 
 	if cfg.Namespace == "" {
-		log.Fatal("namespace unknown: set --namespace or POD_NAMESPACE")
+		return errors.New("namespace unknown: set --namespace or POD_NAMESPACE")
 	}
 	if cfg.WorkerImage == "" {
-		log.Fatal("--worker-image is required")
+		return errors.New("--worker-image is required")
+	}
+	if cfg.DirectorURL == "" {
+		cfg.DirectorURL = defaultDirectorURL(cfg.Namespace)
 	}
 
 	st, err := store.Open(filepath.Join(cfg.Data, "boardingparty.db"))
 	if err != nil {
-		log.Fatalf("store: %v", err)
+		return fmt.Errorf("store: %w", err)
 	}
 	defer st.Close()
 
 	// Plain (uncached) client: Sessions are unstructured and must be read live.
-	kc, err := client.New(ctrl.GetConfigOrDie(), client.Options{})
+	restCfg, err := ctrl.GetConfig()
 	if err != nil {
-		log.Fatalf("kubernetes client: %v", err)
+		return fmt.Errorf("kubernetes config: %w", err)
+	}
+	kc, err := client.New(restCfg, client.Options{})
+	if err != nil {
+		return fmt.Errorf("kubernetes client: %w", err)
 	}
 	svc := &runs.Service{
 		Store:     st,
@@ -99,27 +122,38 @@ func main() {
 	go svc.Watch(ctx, runs.DefaultPollInterval, cfg.RunTimeout)
 
 	admin, worker := newServers(cfg, svc, st)
-	servers := []*http.Server{
+	return serve(ctx, []*http.Server{
 		{Addr: cfg.AdminAddr, Handler: admin, ReadHeaderTimeout: 10 * time.Second},
 		{Addr: cfg.WorkerAddr, Handler: worker, ReadHeaderTimeout: 10 * time.Second},
-	}
+	})
+}
+
+// serve runs the servers until ctx ends or one fails to listen/serve, then
+// shuts all of them down. It returns the first listener error, if any.
+func serve(ctx context.Context, servers []*http.Server) error {
 	errc := make(chan error, len(servers))
 	for _, s := range servers {
+		ln, err := net.Listen("tcp", s.Addr)
+		if err != nil {
+			errc <- fmt.Errorf("listen %s: %w", s.Addr, err)
+			continue
+		}
 		go func(s *http.Server) {
 			log.Printf("listening on %s", s.Addr)
-			if err := s.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-				errc <- err
+			if err := s.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+				errc <- fmt.Errorf("serve %s: %w", s.Addr, err)
 			}
 		}(s)
 	}
+	var result error
 	select {
 	case <-ctx.Done():
-	case err := <-errc:
-		log.Printf("server: %v", err)
+	case result = <-errc:
 	}
 	sctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	for _, s := range servers {
 		s.Shutdown(sctx)
 	}
+	return result
 }

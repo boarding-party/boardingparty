@@ -64,7 +64,7 @@ spec:
           args:
             - --data=/data
             - --worker-image=boardingparty-worker:dev
-            - --director-url=http://bp-director:8080
+            - --director-url=http://bp-director.$(POD_NAMESPACE).svc:8080
             - --admin-addr=127.0.0.1:8081
             - --worker-addr=:8080
           env:
