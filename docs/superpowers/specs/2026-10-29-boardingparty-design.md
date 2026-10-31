@@ -191,12 +191,13 @@ laptop                                client cluster, namespace bp-<project>
 tiny's controller starts every session with `/tiny/entrypoint.sh`
 (internal/workload/workload.go), which seeds only the `tiny` MCP server.
 Decision (user, 2026-10-29: tiny may change where it fits tiny): add a
-generic `spec.mcpServers` to tiny's `Session` (name → HTTP URL, optional
-header from a Secret key), written by the entrypoint next to the `tiny`
-server for both claude and codex. It fits tiny on its own: any session may
+generic `spec.mcpServers` to tiny's `Session` (name → HTTP URL, or a stdio
+command + args), written by the entrypoint next to the `tiny` server for
+both claude and codex. There is no header support: the per-run token travels
+in the URL path (`/mcp/run/{token}`). It fits tiny on its own: any session may
 need an in-cluster MCP server. Lands in tiny first, as its own release.
 
-Director MCP tools (the run token in the header identifies persona + run):
+Director MCP tools (the run token in the URL path identifies persona + run):
 - `next_assignment()` → persona + story + context for this run.
 - `persona_save(state)` → storage state, notes, data created.
 - `messages_list()` / `message_read(id)` → the persona's messages (§3.1).
