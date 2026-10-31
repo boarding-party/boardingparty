@@ -1,0 +1,110 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bp-director
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bp-director
+rules:
+  - apiGroups: ["agents.tinysystems.io"]
+    resources: ["sessions"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bp-director
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: bp-director
+subjects:
+  - kind: ServiceAccount
+    name: bp-director
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bp-director-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bp-director
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # one writer on the SQLite PVC
+  selector:
+    matchLabels:
+      app: bp-director
+  template:
+    metadata:
+      labels:
+        app: bp-director
+    spec:
+      serviceAccountName: bp-director
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: director
+          image: boardingparty-director:dev
+          args:
+            - --data=/data
+            - --worker-image=boardingparty-worker:dev
+            - --director-url=http://bp-director:8080
+            - --admin-addr=127.0.0.1:8081
+            - --worker-addr=:8080
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: worker
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: worker
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: worker
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: bp-director-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bp-director
+spec:
+  type: ClusterIP
+  selector:
+    app: bp-director
+  ports:
+    - name: worker
+      port: 8080
+      targetPort: worker

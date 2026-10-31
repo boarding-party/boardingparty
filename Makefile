@@ -7,4 +7,4 @@ build:
 	go build ./...
 
 image:
-	@echo "image: filled in by later tasks"
+	docker build -f Dockerfile.director -t boardingparty-director:dev .
