@@ -21,6 +21,14 @@ var ErrNotFound = errors.New("not found")
 
 type RunState string // "pending","running","done","stuck","failed"
 
+const (
+	RunPending RunState = "pending"
+	RunRunning RunState = "running"
+	RunDone    RunState = "done"
+	RunStuck   RunState = "stuck"
+	RunFailed  RunState = "failed"
+)
+
 type Run struct {
 	ID, Token, Persona, Role, Story string
 	State                           RunState
@@ -133,6 +141,14 @@ func (s *Store) CreateRun(r Run) error {
 
 func (s *Store) RunByToken(token string) (Run, error) {
 	r, err := scanRun(s.db.QueryRow(`SELECT `+runCols+` FROM runs WHERE token = ?`, token))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Run{}, ErrNotFound
+	}
+	return r, err
+}
+
+func (s *Store) RunByID(id string) (Run, error) {
+	r, err := scanRun(s.db.QueryRow(`SELECT `+runCols+` FROM runs WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, ErrNotFound
 	}

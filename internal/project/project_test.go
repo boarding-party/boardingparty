@@ -22,6 +22,12 @@ roles:
   - name: a
     personas: [{traits: [x]}]
 `},
+		{"duplicate persona across roles", `name: p
+sites: ["https://x.test"]
+roles:
+  - {name: a, personas: [{name: ann}]}
+  - {name: b, personas: [{name: ann}]}
+`},
 		{"story without goal", `name: p
 sites: ["https://x.test"]
 roles:

@@ -109,3 +109,20 @@ func TestProjectReplace(t *testing.T) {
 		t.Fatalf("got %+v %v", p, err)
 	}
 }
+
+func TestRunByID(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "bp.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.RunByID("nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+	if err := s.CreateRun(Run{ID: "r1", Token: "t1", State: "pending"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.RunByID("r1"); err != nil || got.Token != "t1" {
+		t.Fatalf("got %+v %v", got, err)
+	}
+}

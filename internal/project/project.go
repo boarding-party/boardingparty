@@ -58,6 +58,7 @@ func (p Project) validate() error {
 		}
 	}
 	seen := map[string]bool{}
+	personas := map[string]bool{} // runs and persona state are keyed by persona name
 	for _, r := range p.Roles {
 		if r.Name == "" {
 			return fmt.Errorf("role needs a name")
@@ -70,6 +71,10 @@ func (p Project) validate() error {
 			if pe.Name == "" {
 				return fmt.Errorf("role %q: persona needs a name", r.Name)
 			}
+			if personas[pe.Name] {
+				return fmt.Errorf("duplicate persona %q", pe.Name)
+			}
+			personas[pe.Name] = true
 		}
 		for _, st := range r.Stories {
 			if st.Goal == "" {
