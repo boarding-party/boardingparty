@@ -60,7 +60,7 @@ Non-goals (v1)
 
 Anti-goals (would make it a failure even if it works)
 - Ever reaching production. Agents may only open the configured staging
-  hosts plus the built-in inbox; nothing else is reachable.
+  hosts plus the model API and the mailbox server; nothing else is reachable.
 - Real personal data. All identity data is synthetic (NHS numbers from the
   reserved test range, fake names, real-format postcodes).
 - Silent spend. Hitting the daily budget pauses the cast and says so.
@@ -145,7 +145,7 @@ laptop                                client cluster, namespace bp-<project>
                                     │  image: Playwright + Chromium + tiny     │
                                     │  payload; Claude Code drives the browser │
                                     │                                          │
-                                    │ Mailpit (all persona inboxes)            │
+                                    │ (mail: director connects out over IMAP)  │
                                     │ MinIO / S3 (videos, traces, screenshots) │
                                     └───────────────┬──────────────────────────┘
                                                     ▼ egress allow-list only
@@ -199,7 +199,7 @@ need an in-cluster MCP server. Lands in tiny first, as its own release.
 Director MCP tools (the run token in the header identifies persona + run):
 - `next_assignment()` → persona + story + context for this run.
 - `persona_save(state)` → storage state, notes, data created.
-- `inbox_list()` / `inbox_read(id)` → the persona's Mailpit inbox.
+- `messages_list()` / `message_read(id)` → the persona's messages (§3.1).
 - `finish_run(outcome, summary)`.
 - `report_bug(summary, step, evidence, severity_guess, note)`.
 - Supervisor-only: `list_recordings(filter)`, `get_recording(id)` (sampled
@@ -209,12 +209,12 @@ Director MCP tools (the run token in the header identifies persona + run):
 ### 4.4 Email sources (first release)
 Messages arrive through a channel adapter; adapters are the only
 channel-specific code.
-- **Mailpit** (in the namespace) for sites whose outgoing SMTP host can be
-  pointed at it on staging (e.g. lumistack: Google Workspace SMTP). Mailpit
-  calls the director's webhook on each new message. Free, nothing leaves the
-  cluster.
-- **IMAP** for sites that send through a provider's API (e.g. augmentive:
-  customer.io) and for invites humans send. The user brings a mailbox: a
+- **Real mail only.** Sites keep their real sending path (augmentive:
+  customer.io; lumistack: Google Workspace SMTP), so templates, providers
+  and tracking links are tested as users get them. No fake/capturing SMTP
+  server (decided 2026-10-31).
+- **IMAP** is the one adapter in the first release, for site mail and for
+  invites humans send. The user brings a mailbox: a
   dedicated Google Workspace or other mailbox with plus-addressing
   (`cast+megan@domain`) or a catch-all on a domain. The director connects
   out (IMAP IDLE), so nothing listens in the cluster. Credentials (app
@@ -240,7 +240,7 @@ channel-specific code.
   cluster (checked, with a clear message if missing). It creates the
   namespace, sets it up for tiny through tiny's own existing mechanisms
   (service account, agent env secret holding the API key, default-deny
-  policy, hostname allow-list), then installs director, Mailpit, worker
+  policy, hostname allow-list), then installs director, worker
   RBAC (create/delete Sessions in this namespace only). Also `start`, `stop`,
   `status`, `report` for scripting.
 - UI is static assets embedded in the CLI binary. Pages per the approved
@@ -281,7 +281,7 @@ Persona states (shown on Cast):
   there yet. The run declares what it waits for as a machine-checkable
   condition: an email matching a subject/sender in its inbox, a handoff
   completed by another role, or a time. The director checks these cheaply
-  (Mailpit API, its own handoff table, the clock) and schedules the next run
+  (stored messages, its own handoff table, the clock) and schedules the next run
   only when the condition holds.
 - **stuck**: a wait passed its timeout, or a run hit something it cannot get
   past. Filed as a finding; the persona stops trying that story until a
@@ -297,9 +297,9 @@ that a human would clear inside the site (approve a new account, send an
 invite) is a story of an admin-type role, and the user persona waits on it as
 a handoff. A gate outside the site (a real identity check against an
 external service) can't be cleared by the cast; those roles use pre-made
-accounts. Email works for any site whose staging can send mail through
-Mailpit's SMTP; a site that can't uses pre-made accounts and skips stories
-that need email.
+accounts. Email works for any site that can send to the project's real mailbox
+addresses; a role whose sign-up rejects those addresses uses pre-made
+accounts.
 
 ## 6. Open questions and risks
 
@@ -317,7 +317,8 @@ that need email.
    sandbox, CDNs) shown in Limits & settings. tiny's `egress` refusals log
    is read by the director; a refused host during a run is reported as a
    finding ("story needs host X") rather than a site bug. In-namespace
-   Mailpit, director and MinIO are reachable by default policy; verify the
+   director and MinIO are reachable by default policy; the director itself
+   needs egress to the IMAP server; verify the
    proxy doesn't break in-namespace HTTP.
 5. **Bug grouping quality.** Fingerprinting by step + error signature may
    over- or under-group; v1 lets the user merge/split bugs by hand.

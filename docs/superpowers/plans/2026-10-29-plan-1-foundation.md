@@ -4,13 +4,13 @@
 
 **Goal:** One persona runs one story end to end on a real cluster: the director starts a tiny Session with the worker image, the agent drives Chromium through Playwright MCP, talks to the director over MCP, uploads its video and trace, and finishes the run with an outcome you can list from the CLI.
 
-**Architecture:** tiny gains a generic `spec.mcpServers` (Tasks 1–2). boardingparty is one Go module with two binaries: `director` (in-cluster: SQLite store, HTTP API, MCP server, tiny Session launcher) and `boardingparty` (CLI reaching the director through a Kubernetes port-forward). The worker is a Playwright base image that tiny injects its payload into. No scheduler, Mailpit, UI or install command yet; those are Plans 2–3.
+**Architecture:** tiny gains a generic `spec.mcpServers` (Tasks 1–2). boardingparty is one Go module with two binaries: `director` (in-cluster: SQLite store, HTTP API, MCP server, tiny Session launcher) and `boardingparty` (CLI reaching the director through a Kubernetes port-forward). The worker is a Playwright base image that tiny injects its payload into. No scheduler, mail, UI or install command yet; those are Plans 2–3.
 
 **Tech Stack:** Go 1.26, `modernc.org/sqlite` (no cgo), `github.com/modelcontextprotocol/go-sdk`, `sigs.k8s.io/controller-runtime` client, `k8s.io/client-go` port-forward, `github.com/spf13/cobra`, `sigs.k8s.io/yaml`, `mcr.microsoft.com/playwright:<latest stable>-noble` + `@playwright/mcp` (pin both exact versions in Task 3; the tag shown in Task 3 is a placeholder).
 
 **Spec:** `docs/superpowers/specs/2026-10-29-boardingparty-design.md`
 
-**Later plans (not here):** Plan 2 = scheduler, activity patterns, handoffs, waiting/stuck states (§5, §5.1), limits and budget, Mailpit inboxes, bug grouping, supervisors' recording tools, S3 storage and retention. Plan 3 = `boardingparty install`, embedded web UI from the prototype, `ui` command.
+**Later plans (not here):** Plan 2 = scheduler, activity patterns, handoffs, waiting/stuck states (§5, §5.1), limits and budget, IMAP channel and persona workspace, bug grouping, supervisors' recording tools, S3 storage and retention. Plan 3 = `boardingparty install`, embedded web UI from the prototype, `ui` command.
 
 ## Global Constraints
 
