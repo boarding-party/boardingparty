@@ -274,7 +274,7 @@ func runSetup(ctx context.Context, d setupDeps, o setupOpts, out io.Writer) erro
 	if err := waitVerify(wctx, d); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "✓ director ready\n\nNext:\n  boardingparty apply -f project.yaml -n %s\n  boardingparty run \"<persona>\" \"<story>\" --wait -n %s\n", o.ns, o.ns)
+	fmt.Fprintf(out, "✓ director ready\n\nNext:\n  boardingparty board -n %s\n", o.ns)
 	return nil
 }
 

@@ -10,9 +10,11 @@ It runs on your own Kubernetes cluster, on top of
 [tiny](https://github.com/tiny-systems/tiny). Nothing is exposed to the
 internet, and agents can only reach the hosts you allow.
 
-> Status: early. Plan 1 (one persona, one story, end to end) is built and
-> tested in code. It has not yet run on a real cluster. Scheduling,
-> handoffs, email and the web UI come next; see [Roadmap](#roadmap).
+> Status: early. One persona, one story, end to end is built and tested in
+> code, along with `boardingparty board` (a local web UI with runs, run
+> detail with video, and a project editor) and `boardingparty leave`. It has
+> not yet run on a real cluster. Scheduling, handoffs, email, profiles,
+> supervisors and limits come next; see [Roadmap](#roadmap).
 
 ## What a run looks like
 
@@ -88,8 +90,9 @@ A persona is just rows in the director's database. A pod exists only while a
 run is in progress, so fifty personas cost nothing until one of them acts.
 
 **CLI** (`cmd/boardingparty`). `board`, `setup`, `apply`, `run`, `runs`, `get`
-and `leave`. Every command opens a port-forward to the director's admin API
-and closes it when done; `board` keeps it open while the UI is in use.
+and `leave`. Every command except `leave` opens a port-forward to the
+director's admin API and closes it when done; `board` keeps it open while the
+UI is in use. `leave` talks to the Kubernetes API directly.
 
 ## Security model
 
@@ -271,10 +274,13 @@ because it is only for this.
 - Structured persona profiles: age, computer confidence, vision, reading,
   device, assistive technology.
 
-**Plan 3: install and UI.**
-- `boardingparty install`.
-- A local web UI with the projects, cast, persona timeline, bugs-with-video
-  and limits screens.
+**Already here.**
+- `boardingparty setup` installs the director; `leave` removes it.
+- `boardingparty board` serves a local web UI: runs, run detail with video,
+  and a project editor.
+
+**Later.**
+- UI screens for the cast, a persona timeline and limits.
 
 Design: [docs/superpowers/specs/2026-10-29-boardingparty-design.md](docs/superpowers/specs/2026-10-29-boardingparty-design.md).
 

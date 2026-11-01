@@ -1,7 +1,7 @@
 # End-to-end check
 
-Run these steps against a real cluster with tiny installed. Plan 1 runs one
-run at a time; the director answers 409 while another run is active.
+Run these steps against a real cluster with tiny installed. The director runs
+one run at a time and answers 409 while another run is active.
 
 1. Prepare the namespace `bp-todomvc` with tiny's namespace setup:
    - an agent env Secret holding a metered `ANTHROPIC_API_KEY`;

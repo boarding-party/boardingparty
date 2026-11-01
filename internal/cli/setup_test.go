@@ -202,7 +202,7 @@ func TestSetupApplies(t *testing.T) {
 	if len(applied) != 6 || applied[0] != "ServiceAccount/bp-director" {
 		t.Errorf("applied = %v", applied)
 	}
-	for _, w := range []string{"✓ Deployment/bp-director", "✓ director ready", "boardingparty apply -f project.yaml -n " + testNS} {
+	for _, w := range []string{"✓ Deployment/bp-director", "✓ director ready", "boardingparty board -n " + testNS} {
 		if !strings.Contains(out.String(), w) {
 			t.Errorf("output missing %q:\n%s", w, out.String())
 		}
