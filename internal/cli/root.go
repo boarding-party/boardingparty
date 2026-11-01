@@ -28,10 +28,10 @@ type globals struct {
 	resolved    bool
 }
 
-// isTerminal reports whether both stdin and stdout are terminals; a variable
+// isTerminal reports whether stdin, stdout and stderr (where the picker draws) are terminals; a variable
 // so tests can force either answer.
 var isTerminal = func() bool {
-	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
 }
 
 // chooseTarget settles the context and namespace before anything else touches

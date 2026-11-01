@@ -72,7 +72,7 @@ func (c *client) do(ctx context.Context, method, path string, body io.Reader, ct
 		// failure means the forward died, usually because the pod went away.
 		var ne net.Error
 		if ctx.Err() == nil && !(errors.As(err, &ne) && ne.Timeout()) {
-			return nil, errLostDirector
+			return nil, fmt.Errorf("%w: %v", errLostDirector, clean(err.Error()))
 		}
 		return nil, err
 	}

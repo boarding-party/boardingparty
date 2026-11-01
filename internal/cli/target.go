@@ -158,7 +158,6 @@ func resolveTarget(ctx context.Context, d targetDeps, flagCtx, flagNS string) (t
 	}
 
 	remembered := d.load()
-	prompted := false
 	t := target{Context: flagCtx, Namespace: flagNS}
 	if t.Context == "" {
 		switch len(contexts) {
@@ -170,7 +169,6 @@ func resolveTarget(ctx context.Context, d targetDeps, flagCtx, flagNS string) (t
 			if t.Context, err = d.prompt.pickContext(contexts, contextCursor(contexts, current, remembered)); err != nil {
 				return target{}, err
 			}
-			prompted = true
 		}
 	}
 	if t.Namespace == "" {
@@ -183,13 +181,10 @@ func resolveTarget(ctx context.Context, d targetDeps, flagCtx, flagNS string) (t
 		if t.Namespace, err = d.prompt.pickNamespace(t.Context, items, namespaceCursor(items, t.Context, remembered), note); err != nil {
 			return target{}, err
 		}
-		prompted = true
 	}
-	if prompted {
-		// Remembering is a convenience; a read-only config dir must not stop a run.
-		if serr := d.save(t); serr != nil {
-			fmt.Fprintf(d.out, "note: could not remember the target: %s\n", shortErr(serr))
-		}
+	// Remembering is a convenience; a read-only config dir must not stop a run.
+	if serr := d.save(t); serr != nil {
+		fmt.Fprintf(d.out, "note: could not remember the target: %s\n", shortErr(serr))
 	}
 	return d.announce(t), nil
 }

@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -33,6 +34,40 @@ type pickModel struct {
 	input   textinput.Model
 	chosen  string
 	aborted bool
+	height  int    // terminal rows; 0 until known
+	errMsg  string // inline validation error while typing
+}
+
+var dns1123Label = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// validNamespace reports whether name is a valid namespace (DNS-1123 label).
+func validNamespace(name string) bool { return len(name) <= 63 && dns1123Label.MatchString(name) }
+
+// window returns the slice [start,end) of n items to show in a view of rows
+// rows, keeping cursor visible and roughly centred. rows <= 0 or >= n shows all.
+func window(n, cursor, rows int) (start, end int) {
+	if rows <= 0 || rows >= n {
+		return 0, n
+	}
+	start = cursor - rows/2
+	if start < 0 {
+		start = 0
+	}
+	if start > n-rows {
+		start = n - rows
+	}
+	return start, start + rows
+}
+
+// listRows is how many list rows fit: the header, hints and footer take 6.
+func (m pickModel) listRows() int {
+	if m.height <= 0 {
+		return 0
+	}
+	if r := m.height - 6; r > 3 {
+		return r
+	}
+	return 3
 }
 
 func newPickModel(title, note string, labels, values []string, cursor int, typable bool) pickModel {
@@ -60,23 +95,38 @@ func (m pickModel) Init() tea.Cmd {
 }
 
 func (m pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if w, ok := msg.(tea.WindowSizeMsg); ok {
+		m.height = w.Height
+		return m, nil
+	}
 	k, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
 	}
 	key := k.String()
-	if key == "ctrl+c" || key == "esc" || (key == "q" && !m.typing) {
+	if key == "ctrl+c" || (key == "esc" && !(m.typing && len(m.values) > 1)) || (key == "q" && !m.typing) {
 		m.aborted = true
 		return m, tea.Quit
 	}
 	if m.typing {
-		if key == "enter" {
-			if v := strings.TrimSpace(m.input.Value()); v != "" {
-				m.chosen = v
-				return m, tea.Quit
-			}
+		if key == "esc" { // back to the list
+			m.typing, m.errMsg = false, ""
+			m.input.Blur()
 			return m, nil
 		}
+		if key == "enter" {
+			v := strings.TrimSpace(m.input.Value())
+			if v == "" {
+				return m, nil
+			}
+			if !validNamespace(v) {
+				m.errMsg = "not a valid namespace name (lower-case letters, digits and '-', at most 63)"
+				return m, nil
+			}
+			m.chosen = v
+			return m, tea.Quit
+		}
+		m.errMsg = ""
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
@@ -109,15 +159,31 @@ func (m pickModel) View() string {
 		b.WriteString("  " + styleWarn.Render("! ") + m.note + "\n\n")
 	}
 	if m.typing {
-		b.WriteString("  namespace:\n\n  " + m.input.View() + "\n\n" + styleSubtle.Render("  enter confirm · esc cancel") + "\n")
+		b.WriteString("  namespace:\n\n  " + m.input.View() + "\n\n")
+		if m.errMsg != "" {
+			b.WriteString("  " + styleWarn.Render(m.errMsg) + "\n\n")
+		}
+		hint := "  enter confirm · esc cancel"
+		if len(m.values) > 1 {
+			hint = "  enter confirm · esc back to the list"
+		}
+		b.WriteString(styleSubtle.Render(hint) + "\n")
 		return b.String()
 	}
-	for i, l := range m.labels {
+	start, end := window(len(m.labels), m.cursor, m.listRows())
+	if start > 0 {
+		b.WriteString(styleSubtle.Render(fmt.Sprintf("  ↑ %d more", start)) + "\n")
+	}
+	for i := start; i < end; i++ {
+		l := m.labels[i]
 		mark := "  "
 		if i == m.cursor {
 			mark = styleKey.Render("▸ ")
 		}
 		b.WriteString(mark + l + "\n")
+	}
+	if end < len(m.labels) {
+		b.WriteString(styleSubtle.Render(fmt.Sprintf("  ↓ %d more", len(m.labels)-end)) + "\n")
 	}
 	b.WriteString("\n" + styleSubtle.Render("  ↑/↓ move · enter choose · esc cancel") + "\n")
 	return b.String()

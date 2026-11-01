@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -175,8 +176,8 @@ func TestInteractiveSkipsWhatFlagsOrSingleContextAnswer(t *testing.T) {
 	}
 	e = newEnv(true, []string{"a", "b"}, "a", target{})
 	got, _ = resolveTarget(context.Background(), e.deps, "b", "given")
-	if got != (target{"b", "given"}) || len(e.p.calls) != 0 || e.saved != nil {
-		t.Errorf("flags: %v calls %v saved %v", got, e.p.calls, e.saved)
+	if got != (target{"b", "given"}) || len(e.p.calls) != 0 || e.saved == nil || *e.saved != got {
+		t.Errorf("flags: %v calls %v saved %v (flags in a TTY are remembered)", got, e.p.calls, e.saved)
 	}
 	e = newEnv(true, []string{"a", "b"}, "a", target{})
 	if _, _ = resolveTarget(context.Background(), e.deps, "b", ""); !reflect.DeepEqual(e.p.calls, []string{"ns"}) {
@@ -276,11 +277,90 @@ func TestLostConnectionMessage(t *testing.T) {
 	c := newClient(srv.URL)
 	srv.Close() // the forward is gone
 	start := time.Now()
-	_, err := waitRun(context.Background(), c, "r1", time.Hour)
-	if !errors.Is(err, errLostDirector) || !strings.Contains(err.Error(), "lost connection to the director (was it removed?)") {
-		t.Fatalf("err = %v", err)
+	_, err := waitRun(context.Background(), c, "r1", time.Millisecond)
+	if !errors.Is(err, errLostDirector) || !strings.Contains(err.Error(), "lost connection to the director (was it removed?): ") {
+		t.Fatalf("err = %v (cause must stay visible)", err)
 	}
 	if time.Since(start) > 5*time.Second {
-		t.Error("should fail at once, not retry")
+		t.Error("too slow")
+	}
+}
+
+func TestWindow(t *testing.T) {
+	cases := []struct{ cursor, start, end int }{
+		{0, 0, 10}, {25, 20, 30}, {49, 40, 50}, {3, 0, 10}, {46, 40, 50},
+	}
+	for _, c := range cases {
+		s, e := window(50, c.cursor, 10)
+		if s != c.start || e != c.end || c.cursor < s || c.cursor >= e {
+			t.Errorf("cursor %d: got [%d,%d) want [%d,%d)", c.cursor, s, e, c.start, c.end)
+		}
+	}
+	if s, e := window(5, 2, 10); s != 0 || e != 5 {
+		t.Errorf("short list: [%d,%d)", s, e)
+	}
+	if s, e := window(50, 20, 0); s != 0 || e != 50 {
+		t.Errorf("unknown height: [%d,%d)", s, e)
+	}
+}
+
+func TestPickModelViewScrollsWithCursor(t *testing.T) {
+	var l []string
+	for i := 0; i < 50; i++ {
+		l = append(l, fmt.Sprintf("ns-%02d", i))
+	}
+	var m tea.Model = newPickModel("t", "", l, l, 30, false)
+	m, _ = m.Update(tea.WindowSizeMsg{Height: 16})
+	v := m.View()
+	if !strings.Contains(v, "ns-30") || strings.Contains(v, "ns-00") || !strings.Contains(v, "more") {
+		t.Errorf("view:\n%s", v)
+	}
+	if n := strings.Count(v, "\n"); n > 16 {
+		t.Errorf("view is %d lines for a 16-row terminal", n)
+	}
+}
+
+func TestValidNamespace(t *testing.T) {
+	for n, want := range map[string]bool{"bp": true, "a-b1": true, "Bad": false, "-x": false, "x-": false, "a_b": false, strings.Repeat("a", 64): false} {
+		if validNamespace(n) != want {
+			t.Errorf("%q: want %v", n, want)
+		}
+	}
+}
+
+func TestTypingRejectsInvalidAndEscGoesBack(t *testing.T) {
+	m := newPickModel("t", "", []string{"a"}, []string{"a"}, 0, true)
+	m = keys(m, key("down"), key("enter"), key("B"), key("enter"))
+	if m.chosen != "" || !m.typing || m.errMsg == "" {
+		t.Fatalf("invalid name accepted: %+v", m)
+	}
+	m = keys(m, key("esc"))
+	if m.typing || m.aborted {
+		t.Errorf("esc while typing must return to the list: %+v", m)
+	}
+	m = keys(m, key("esc"))
+	if !m.aborted {
+		t.Error("esc on the list must cancel")
+	}
+	only := keys(newPickModel("t", "", nil, nil, 0, true), key("esc"))
+	if !only.aborted {
+		t.Error("esc with nothing to go back to must cancel")
+	}
+}
+
+func TestChooseTargetFlagsNonTTY(t *testing.T) {
+	old := isTerminal
+	isTerminal = func() bool { return false }
+	t.Cleanup(func() { isTerminal = old })
+	g := &globals{kubeContext: "ctx-x", namespace: "ns-x"}
+	if err := g.chooseTarget(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if g.kubeContext != "ctx-x" || g.namespace != "ns-x" || !g.resolved {
+		t.Errorf("globals = %+v", g)
+	}
+	g = &globals{}
+	if err := g.chooseTarget(context.Background()); err == nil || !strings.Contains(err.Error(), "-n") {
+		t.Errorf("err = %v", err)
 	}
 }
