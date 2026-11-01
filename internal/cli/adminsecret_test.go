@@ -107,7 +107,7 @@ func TestReadAdminToken(t *testing.T) {
 	if _, err := readAdminToken(context.Background(), kube, testNS); err == nil || !strings.Contains(err.Error(), "boardingparty setup") {
 		t.Errorf("missing secret err = %v", err)
 	}
-	if _, err := ensureAdminSecret(context.Background(), kube, testNS); err != nil {
+	if _, _, err := ensureAdminSecret(context.Background(), kube, testNS); err != nil {
 		t.Fatal(err)
 	}
 	tok, err := readAdminToken(context.Background(), kube, testNS)
@@ -137,5 +137,13 @@ func TestClientSendsBearer(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Errorf("requests = %d", len(got))
+	}
+}
+
+func TestTokenReusesWhatEnsureRead(t *testing.T) {
+	g := &globals{adminToken: "from-ensure"}
+	// nil config: any cluster call would fail.
+	if tok, err := g.token(context.Background(), nil, testNS); err != nil || tok != "from-ensure" {
+		t.Errorf("token = %q, %v", tok, err)
 	}
 }

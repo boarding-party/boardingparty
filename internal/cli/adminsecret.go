@@ -20,19 +20,19 @@ const (
 	adminSecretKey = "token"
 )
 
-// ensureAdminSecret creates the admin Secret if it doesn't exist. An existing
-// one is left exactly as it is.
-func ensureAdminSecret(ctx context.Context, kube kubernetes.Interface, ns string) (created bool, err error) {
-	_, err = kube.CoreV1().Secrets(ns).Get(ctx, adminSecret, metav1.GetOptions{})
+// ensureAdminSecret returns the admin Secret, creating it if it doesn't
+// exist. An existing one is left exactly as it is.
+func ensureAdminSecret(ctx context.Context, kube kubernetes.Interface, ns string) (*corev1.Secret, bool, error) {
+	cur, err := kube.CoreV1().Secrets(ns).Get(ctx, adminSecret, metav1.GetOptions{})
 	if err == nil {
-		return false, nil
+		return cur, false, nil
 	}
 	if !apierrors.IsNotFound(err) {
-		return false, fmt.Errorf("get secret %s: %w", adminSecret, err)
+		return nil, false, fmt.Errorf("get secret %s: %w", adminSecret, err)
 	}
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		return false, err
+		return nil, false, err
 	}
 	s := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -42,15 +42,34 @@ func ensureAdminSecret(ctx context.Context, kube kubernetes.Interface, ns string
 		Type: corev1.SecretTypeOpaque,
 		Data: map[string][]byte{adminSecretKey: []byte(hex.EncodeToString(b))},
 	}
-	_, err = kube.CoreV1().Secrets(ns).Create(ctx, s, metav1.CreateOptions{FieldManager: fieldManager})
+	made, err := kube.CoreV1().Secrets(ns).Create(ctx, s, metav1.CreateOptions{FieldManager: fieldManager})
 	if apierrors.IsAlreadyExists(err) {
-		return false, nil // created concurrently; keep theirs
+		// Created concurrently; keep theirs.
+		cur, err = kube.CoreV1().Secrets(ns).Get(ctx, adminSecret, metav1.GetOptions{})
+		if err != nil {
+			return nil, false, fmt.Errorf("get secret %s: %w", adminSecret, err)
+		}
+		return cur, false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("create secret %s: %w", adminSecret, err)
+		return nil, false, fmt.Errorf("create secret %s: %w", adminSecret, err)
 	}
-	return true, nil
+	return made, true, nil
 }
+
+// adminTokenOf returns the token in the admin Secret.
+func adminTokenOf(s *corev1.Secret, ns string) (string, error) {
+	t := string(s.Data[adminSecretKey])
+	if t == "" {
+		return "", fmt.Errorf("secret %s has no %q key: delete it and run `boardingparty setup -n %s`", adminSecret, adminSecretKey, ns)
+	}
+	return t, nil
+}
+
+// adminSecretAnnotation on the director's pod template carries the admin
+// Secret's UID (not its value), so recreating the Secret rolls the pods and
+// they pick up the new key.
+const adminSecretAnnotation = "boardingparty.io/admin-secret-uid"
 
 // readAdminToken reads the admin bearer secret.
 func readAdminToken(ctx context.Context, kube kubernetes.Interface, ns string) (string, error) {
@@ -61,9 +80,5 @@ func readAdminToken(ctx context.Context, kube kubernetes.Interface, ns string) (
 	if err != nil {
 		return "", fmt.Errorf("read secret %s (the director's admin key): %w", adminSecret, err)
 	}
-	t := string(s.Data[adminSecretKey])
-	if t == "" {
-		return "", fmt.Errorf("secret %s has no %q key: delete it and run `boardingparty setup -n %s`", adminSecret, adminSecretKey, ns)
-	}
-	return t, nil
+	return adminTokenOf(s, ns)
 }

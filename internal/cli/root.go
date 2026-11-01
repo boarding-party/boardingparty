@@ -103,7 +103,8 @@ func quietClientGo() {
 	rest.SetDefaultWarningHandler(rest.NoWarnings{})
 }
 
-// ensure installs or upgrades the director on first use. Progress goes to stderr.
+// ensure installs or upgrades the director on first use and remembers the
+// admin token it read, so token() needs no second lookup. Progress goes to stderr.
 func (g *globals) ensure(ctx context.Context, cfg *rest.Config, ns string) error {
 	d := setupDeps{}
 	var err error
@@ -117,7 +118,12 @@ func (g *globals) ensure(ctx context.Context, cfg *rest.Config, ns string) error
 		return err
 	}
 	d.verify = verifyDirector(cfg, ns)
-	return ensureDirector(ctx, d, setupOpts{ns: ns, tag: wantedTag(), timeout: 3 * time.Minute}, os.Stderr)
+	token, err := ensureDirector(ctx, d, setupOpts{ns: ns, tag: wantedTag(), timeout: 3 * time.Minute}, os.Stderr)
+	if err != nil {
+		return err
+	}
+	g.adminToken = token
+	return nil
 }
 
 // kubeConfig loads the kube credentials for the chosen target.

@@ -253,7 +253,7 @@ func TestEnsureDirectorMissingInstalls(t *testing.T) {
 		return nil
 	}
 	var out strings.Builder
-	if err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &out); err != nil {
+	if _, err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &out); err != nil {
 		t.Fatal(err)
 	}
 	if len(applied) != 6 || !strings.Contains(out.String(), "installing the director") || !strings.Contains(out.String(), "! network policies") {
@@ -263,7 +263,7 @@ func TestEnsureDirectorMissingInstalls(t *testing.T) {
 
 func TestEnsureDirectorTinyMissing(t *testing.T) {
 	var applied []string
-	err := ensureDirector(context.Background(), ensureDeps(&applied, false), setupOpts{ns: testNS, tag: "main", timeout: time.Second}, &strings.Builder{})
+	_, err := ensureDirector(context.Background(), ensureDeps(&applied, false), setupOpts{ns: testNS, tag: "main", timeout: time.Second}, &strings.Builder{})
 	if err == nil || !strings.Contains(err.Error(), "run `tiny init -n "+testNS+"`") || !strings.Contains(err.Error(), "✗ CRD") {
 		t.Errorf("err = %v", err)
 	}
@@ -277,7 +277,7 @@ func TestEnsureDirectorUpgrade(t *testing.T) {
 	var applied []string
 	var out strings.Builder
 	d := ensureDeps(&applied, true, directorAt("0.9.0"))
-	if err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &out); err != nil {
+	if _, err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &out); err != nil {
 		t.Fatal(err)
 	}
 	if len(applied) != 6 || !strings.Contains(out.String(), "upgrading the director in "+testNS+" (0.9.0 -> 1.0.0)") {
@@ -289,12 +289,85 @@ func TestEnsureDirectorCurrentIsSilent(t *testing.T) {
 	var applied []string
 	var out strings.Builder
 	// tiny is missing too: the fast path must not even look.
-	d := ensureDeps(&applied, false, directorAt("1.0.0"))
-	if err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &out); err != nil {
+	d := ensureDeps(&applied, false, directorAt("1.0.0"), adminSecretObj("tok-1"))
+	verified := 0
+	d.verify = func(context.Context) error { verified++; return nil }
+	tok, err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &out)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(applied) != 0 || out.Len() != 0 {
-		t.Errorf("applied=%v out=%q", applied, out.String())
+	if len(applied) != 0 || out.Len() != 0 || verified != 0 {
+		t.Errorf("applied=%v verified=%d out=%q", applied, verified, out.String())
+	}
+	if tok != "tok-1" {
+		t.Errorf("token = %q", tok)
+	}
+}
+
+func adminSecretObj(token string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: adminSecret, Namespace: testNS, UID: "uid-1"},
+		Data:       map[string][]byte{adminSecretKey: []byte(token)},
+	}
+}
+
+func TestEnsureDirectorCurrentButAdminSecretMissingReinstalls(t *testing.T) {
+	waitPoll = time.Millisecond
+	var applied []string
+	var out strings.Builder
+	d := ensureDeps(&applied, true, directorAt("1.0.0"))
+	var order []string
+	apply := d.apply
+	d.apply = func(ctx context.Context, o *unstructured.Unstructured) error {
+		if _, ok := adminSecretValue(t, d.kube); !ok {
+			t.Errorf("%s applied before the secret existed", o.GetKind())
+		}
+		order = append(order, "apply")
+		return apply(ctx, o)
+	}
+	d.verify = func(context.Context) error { order = append(order, "verify"); return nil }
+	tok, err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, ok := adminSecretValue(t, d.kube)
+	if !ok || len(want) != 64 || tok != want {
+		t.Errorf("secret %q ok=%v, token %q", want, ok, tok)
+	}
+	if len(applied) != 6 {
+		t.Errorf("applied = %v", applied)
+	}
+	if len(order) == 0 || order[len(order)-1] != "verify" {
+		t.Errorf("verify didn't run after the apply: %v", order)
+	}
+	if !strings.Contains(out.String(), "reinstalling the director in "+testNS+" (its admin key is missing)") {
+		t.Errorf("out = %s", out.String())
+	}
+	if strings.Contains(out.String(), tok) {
+		t.Errorf("token printed")
+	}
+}
+
+func TestInstallStampsSecretUIDOnPodTemplate(t *testing.T) {
+	waitPoll = time.Millisecond
+	var applied []string
+	d := ensureDeps(&applied, true, directorAt("0.9.0"), adminSecretObj("tok-1"))
+	var uid string
+	d.apply = func(_ context.Context, o *unstructured.Unstructured) error {
+		if o.GetKind() == "Deployment" {
+			uid, _, _ = unstructured.NestedString(o.Object, "spec", "template", "metadata", "annotations", adminSecretAnnotation)
+		}
+		return nil
+	}
+	tok, err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &strings.Builder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uid != "uid-1" || tok != "tok-1" {
+		t.Errorf("annotation = %q, token = %q", uid, tok)
+	}
+	if v, _ := adminSecretValue(t, d.kube); v != "tok-1" {
+		t.Errorf("existing secret changed: %q", v)
 	}
 }
 
@@ -343,7 +416,7 @@ func TestEnsureWaitsForRollout(t *testing.T) {
 		d.kube.AppsV1().Deployments(testNS).Update(context.Background(), fresh, metav1.UpdateOptions{})
 	}()
 	start := time.Now()
-	if err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: 2 * time.Second}, &strings.Builder{}); err != nil {
+	if _, err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: 2 * time.Second}, &strings.Builder{}); err != nil {
 		t.Fatal(err)
 	}
 	if time.Since(start) < 25*time.Millisecond {
@@ -356,7 +429,7 @@ func TestEnsureVerifies(t *testing.T) {
 	var applied []string
 	d := ensureDeps(&applied, true, directorAt("0.9.0"))
 	d.verify = func(context.Context) error { return errors.New("not yet") }
-	err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: 50 * time.Millisecond}, &strings.Builder{})
+	_, err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: 50 * time.Millisecond}, &strings.Builder{})
 	if err == nil || !strings.Contains(err.Error(), "not yet") {
 		t.Errorf("err = %v", err)
 	}
@@ -372,7 +445,7 @@ func TestWaitErrorIsReported(t *testing.T) {
 		}
 		return false, nil, nil
 	})
-	err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: 50 * time.Millisecond}, &strings.Builder{})
+	_, err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: 50 * time.Millisecond}, &strings.Builder{})
 	if err == nil || !strings.Contains(err.Error(), "apiserver on fire") {
 		t.Errorf("err = %v", err)
 	}
@@ -406,7 +479,7 @@ func TestEnsureForbiddenNamespacedIsNotTinyMissing(t *testing.T) {
 	d.kube.(*kubefake.Clientset).PrependReactor("get", "secrets", func(ktesting.Action) (bool, runtime.Object, error) {
 		return true, nil, forbidden("secrets")
 	})
-	err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &strings.Builder{})
+	_, err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &strings.Builder{})
 	if err == nil || strings.Contains(err.Error(), "tiny init") || !strings.Contains(err.Error(), "no permission (get secrets)") {
 		t.Errorf("err = %v", err)
 	}
@@ -421,7 +494,7 @@ func TestConflictHint(t *testing.T) {
 	d.apply = func(context.Context, *unstructured.Unstructured) error {
 		return apierrors.NewConflict(schema.GroupResource{Resource: "deployments"}, "bp-director", fmt.Errorf("conflict"))
 	}
-	err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &strings.Builder{})
+	_, err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &strings.Builder{})
 	if err == nil || !strings.Contains(err.Error(), "boardingparty setup --force-conflicts") {
 		t.Errorf("err = %v", err)
 	}

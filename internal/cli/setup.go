@@ -268,7 +268,7 @@ func runSetup(ctx context.Context, d setupDeps, o setupOpts, out io.Writer) erro
 	}
 	wctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
-	if err := installDirector(wctx, d, o, objs, out); err != nil {
+	if _, err := installDirector(wctx, d, o, objs, out); err != nil {
 		return err
 	}
 	if err := waitVerify(wctx, d); err != nil {
@@ -279,21 +279,33 @@ func runSetup(ctx context.Context, d setupDeps, o setupOpts, out io.Writer) erro
 }
 
 // installDirector applies the objects one by one and waits for the rollout.
-func installDirector(ctx context.Context, d setupDeps, o setupOpts, objs []*unstructured.Unstructured, out io.Writer) error {
+// It returns the admin API token.
+func installDirector(ctx context.Context, d setupDeps, o setupOpts, objs []*unstructured.Unstructured, out io.Writer) (string, error) {
 	// The Deployment reads the admin secret, so it has to exist first.
-	created, err := ensureAdminSecret(ctx, d.kube, o.ns)
+	sec, created, err := ensureAdminSecret(ctx, d.kube, o.ns)
 	if err != nil {
-		return err
+		return "", err
+	}
+	token, err := adminTokenOf(sec, o.ns)
+	if err != nil {
+		return "", err
 	}
 	if created {
 		fmt.Fprintf(out, "✓ Secret/%s (admin key, created)\n", adminSecret)
 	}
 	for _, obj := range objs {
+		if obj.GetKind() == "Deployment" && sec.UID != "" {
+			if err := unstructured.SetNestedField(obj.Object, string(sec.UID), "spec", "template", "metadata", "annotations", adminSecretAnnotation); err != nil {
+				return "", err
+			}
+		}
+	}
+	for _, obj := range objs {
 		if err := d.apply(ctx, obj); err != nil {
 			if apierrors.IsConflict(err) && !o.force {
-				return fmt.Errorf("apply %s/%s: %w\nthe director was previously applied by another tool; run `boardingparty setup --force-conflicts` once", obj.GetKind(), obj.GetName(), err)
+				return "", fmt.Errorf("apply %s/%s: %w\nthe director was previously applied by another tool; run `boardingparty setup --force-conflicts` once", obj.GetKind(), obj.GetName(), err)
 			}
-			return fmt.Errorf("apply %s/%s: %w", obj.GetKind(), obj.GetName(), err)
+			return "", fmt.Errorf("apply %s/%s: %w", obj.GetKind(), obj.GetName(), err)
 		}
 		fmt.Fprintf(out, "✓ %s/%s\n", clean(obj.GetKind()), clean(obj.GetName()))
 	}
@@ -308,10 +320,10 @@ func installDirector(ctx context.Context, d setupDeps, o setupOpts, objs []*unst
 		return rolloutComplete(dep), nil
 	})
 	if err != nil {
-		return fmt.Errorf("deployment %s not rolled out within %s: %v (last error: %v)", directorDeploy, o.timeout, err, lastErr)
+		return "", fmt.Errorf("deployment %s not rolled out within %s: %v (last error: %v)", directorDeploy, o.timeout, err, lastErr)
 	}
 	fmt.Fprintf(out, "✓ deployment/%s rolled out\n", directorDeploy)
-	return nil
+	return token, nil
 }
 
 // waitVerify retries the admin-API check until it passes or ctx ends.
@@ -328,19 +340,29 @@ func waitVerify(ctx context.Context, d setupDeps) error {
 }
 
 // ensureDirector is what every command that needs the director runs first.
-// Fast path: one Deployment GET; if the director is there at the wanted tag,
-// nothing else happens. Otherwise tiny's prerequisites are checked (read-only,
+// Fast path: a Deployment GET and a Secret GET; if the director is there at
+// the wanted tag and its admin Secret exists, nothing else happens and the
+// admin token is returned. Otherwise (including a missing Secret, which the
+// running director can't work without) tiny's prerequisites are checked (read-only,
 // failing with a pointer to `tiny init`), the warnings are printed once, and
 // the director is installed or upgraded in place.
-func ensureDirector(ctx context.Context, d setupDeps, o setupOpts, out io.Writer) error {
+func ensureDirector(ctx context.Context, d setupDeps, o setupOpts, out io.Writer) (string, error) {
 	dep, err := d.kube.AppsV1().Deployments(o.ns).Get(ctx, directorDeploy, metav1.GetOptions{})
-	if err == nil && imageTag(dep) == o.tag {
-		return nil
-	}
 	if err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("get deployment %s: %w", directorDeploy, err)
+		return "", fmt.Errorf("get deployment %s: %w", directorDeploy, err)
 	}
 	upgrade := err == nil
+	keyMissing := false
+	if upgrade && imageTag(dep) == o.tag {
+		sec, serr := d.kube.CoreV1().Secrets(o.ns).Get(ctx, adminSecret, metav1.GetOptions{})
+		switch {
+		case serr == nil:
+			return adminTokenOf(sec, o.ns)
+		case !apierrors.IsNotFound(serr):
+			return "", fmt.Errorf("read secret %s (the director's admin key): %w", adminSecret, serr)
+		}
+		keyMissing = true
+	}
 	var buf strings.Builder
 	if pc := preflightCheck(ctx, d.kube, d.ext, o.ns, &buf); pc.failed {
 		var failed []string
@@ -350,10 +372,10 @@ func ensureDirector(ctx context.Context, d setupDeps, o setupOpts, out io.Writer
 			}
 		}
 		if !pc.notSetUp {
-			return fmt.Errorf("couldn't check tiny's setup in namespace %s: your credentials lack a permission\n%s",
+			return "", fmt.Errorf("couldn't check tiny's setup in namespace %s: your credentials lack a permission\n%s",
 				o.ns, strings.Join(failed, "\n"))
 		}
-		return fmt.Errorf("tiny isn't set up in namespace %s: run `tiny init -n %s` (and `tiny setup` for the agent key)\n%s",
+		return "", fmt.Errorf("tiny isn't set up in namespace %s: run `tiny init -n %s` (and `tiny setup` for the agent key)\n%s",
 			o.ns, o.ns, strings.Join(failed, "\n"))
 	}
 	for _, l := range strings.Split(buf.String(), "\n") {
@@ -363,19 +385,26 @@ func ensureDirector(ctx context.Context, d setupDeps, o setupOpts, out io.Writer
 	}
 	objs, err := renderManifest(deploy.Director, o.ns, o.tag)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if !upgrade {
+	switch {
+	case keyMissing:
+		fmt.Fprintf(out, "reinstalling the director in %s (its admin key is missing)\n", o.ns)
+	case !upgrade:
 		fmt.Fprintf(out, "installing the director in %s (image tag %s)\n", o.ns, o.tag)
-	} else {
+	default:
 		fmt.Fprintf(out, "upgrading the director in %s (%s -> %s)\n", o.ns, imageTag(dep), o.tag)
 	}
 	wctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
-	if err := installDirector(wctx, d, o, objs, out); err != nil {
-		return err
+	token, err := installDirector(wctx, d, o, objs, out)
+	if err != nil {
+		return "", err
 	}
-	return waitVerify(wctx, d)
+	if err := waitVerify(wctx, d); err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 // imageTag returns the tag of the director container image, or "" when the
