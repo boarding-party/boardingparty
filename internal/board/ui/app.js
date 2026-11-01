@@ -6,6 +6,7 @@
 import { render } from './vendor/preact.module.js';
 import { useState, useEffect, useRef, useCallback } from './vendor/hooks.module.js';
 import { html, api, directorDown } from './lib.js';
+import { ProjectPage } from './project.js';
 
 const ACTIVE = new Set(['pending', 'running']);
 const STATE_TAG = new Map([['pending', 'idle'], ['running', 'run'], ['done', 'ok'], ['stuck', 'wait'], ['failed', 'bad']]);
@@ -173,7 +174,7 @@ function App() {
       <main>
         <${RunStrip} director=${director} active=${active} />
         ${route.page === 'run' ? html`<${RunPage} key=${route.id} id=${route.id} onChange=${loadRuns} />`
-          : route.page === 'project' ? html`<${ProjectPage} project=${project} error=${projectErr} />`
+          : route.page === 'project' ? html`<${ProjectPage} onSaved=${loadProject} />`
           : html`<${RunsPage} project=${project} projectErr=${projectErr} runs=${runs} runsErr=${runsErr}
                     active=${active} onStarted=${loadRuns} />`}
       </main>
@@ -460,40 +461,6 @@ function Bug({ bug, duration, onSeek }) {
   return seekable
     ? html`<button type="button" class="bug seek" title=${'Jump to ' + fmtStamp(secs)} onClick=${() => onSeek(secs)}>${body}</button>`
     : html`<div class="bug">${body}</div>`;
-}
-
-// ---- project (read-only until the editor lands) -------------------------
-
-function ProjectPage({ project, error }) {
-  if (error) return html`<section class="page"><h1>Project</h1><div class="note bad">Could not load the project: ${error}</div></section>`;
-  if (project === undefined) return html`<section class="page"><h1>Project</h1><p class="muted">Loading…</p></section>`;
-  if (project === null) {
-    return html`<section class="page"><h1>Project</h1>
-      <div class="empty"><b>No project yet</b>Upload one with <code>boardingparty apply -f project.yaml</code>.</div></section>`;
-  }
-  return html`
-    <section class="page">
-      <h1>${project.name || 'Project'}</h1>
-      <p class="lede">What the cast may open and who is in it.</p>
-      <div class="stack">
-        <div class="card">
-          <h2>Sites</h2>
-          <ul class="files">${(project.sites || []).map((s) => html`<li key=${s}><code>${s}</code></li>`)}</ul>
-          ${(project.extraHosts || []).length ? html`<p class="small muted" style="margin:8px 0 0">Also allowed: ${project.extraHosts.join(', ')}</p>` : null}
-          ${project.model ? html`<p class="small muted" style="margin:8px 0 0">Model: ${project.model}</p>` : null}
-        </div>
-        <div class="card flush tablewrap">
-          <table>
-            <thead><tr><th>Role</th><th>Personas</th><th>Stories</th></tr></thead>
-            <tbody>${(project.roles || []).map((r) => html`
-              <tr key=${r.name}><td><b>${r.name}</b>${r.description ? html`<div class="small muted">${r.description}</div>` : null}</td>
-                <td>${(r.personas || []).map((p) => p.name).join(', ') || html`<span class="muted">none</span>`}</td>
-                <td>${(r.stories || []).map((s) => s.name).join(', ') || html`<span class="muted">none</span>`}</td></tr>`)}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>`;
 }
 
 render(html`<${App} />`, document.getElementById('root'));

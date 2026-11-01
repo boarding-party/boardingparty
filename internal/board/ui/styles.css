@@ -124,12 +124,54 @@ td a { color: var(--ink); font-weight: 600; }
 .empty { border: 1px dashed #C4CCD6; border-radius: 8px; padding: 28px; text-align: center; color: var(--muted); background: transparent; }
 .empty b { display: block; color: var(--ink); font-size: 15px; margin-bottom: 4px; }
 
+/* project editor */
+.editor .head { align-items: flex-start; margin-bottom: 4px; }
+.editor .card h2 { margin-bottom: 12px; }
+.editor .card > .field + .field, .editor .card > .fields + .field { margin-top: 14px; }
+.fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.field .hint, .hint { font-size: 12px; color: var(--muted); font-weight: 400; }
+.list { display: flex; flex-direction: column; gap: 6px; }
+.row.nowrap { flex-wrap: nowrap; gap: 6px; }
+.grow { flex: 1; min-width: 0; }
+input.strong { font-weight: 600; }
+.mono, textarea.mono { font-family: var(--mono); font-size: 12.5px; }
+.btn.icon { padding: 5px 9px; color: var(--muted); flex: none; font-size: 15px; line-height: 1.2; }
+.btn.icon:hover { color: var(--bad); border-color: #EBC2B4; }
+.btn.ghost { border-style: dashed; color: var(--accent); background: transparent; }
+.btn.ghost:hover { border-color: var(--accent); background: var(--accent-soft); }
+.btn.ghost.small { padding: 4px 10px; font-size: 12px; }
+.btn.danger-ghost { color: var(--bad); border-color: #EBC2B4; align-self: flex-end; flex: none; }
+.btn.danger-ghost:hover { background: var(--bad-soft); }
+.warn { margin-top: 4px; font-size: 12px; color: var(--wait); background: var(--wait-soft); border-radius: 5px; padding: 4px 8px; }
+.role { border-left: 3px solid var(--accent); }
+.role > .field, .role > .check { margin-top: 12px; }
+.check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; font-weight: 500; cursor: pointer; }
+.check input { width: auto; margin: 3px 0 0; }
+.check .hint { display: block; }
+.cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+.cols h3 { font-size: 13px; margin: 0 0 8px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.sub { background: #F7F9FB; border: 1px solid var(--line-soft); border-radius: 6px; padding: 10px; margin-bottom: 8px; display: flex; flex-direction: column; gap: 8px; }
+.sublabel { font-size: 12px; color: var(--muted); font-weight: 500; }
+.kv { display: flex; flex-direction: column; gap: 6px; }
+.kv input.k { flex: 0 0 34%; }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; border: 1px solid var(--line); border-radius: 6px; background: #fff; padding: 4px 6px; }
+.tags:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tags input { border: 0; padding: 3px 4px; flex: 1; min-width: 120px; width: auto; }
+.tags input:focus-visible { outline: none; }
+.chip { display: inline-flex; align-items: center; gap: 2px; background: var(--accent-soft); color: var(--accent); border-radius: 5px; padding: 1px 2px 1px 8px; font-size: 12px; font-weight: 600; }
+.chip button { border: 0; background: none; color: inherit; padding: 0 4px; font-size: 13px; line-height: 1; border-radius: 4px; }
+.chip button:hover { background: rgba(43,89,195,.15); }
+.import { margin-bottom: 14px; border-color: var(--accent); }
+.toast { position: fixed; right: 24px; bottom: 24px; background: var(--ink); color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; box-shadow: 0 6px 24px rgba(24,32,43,.25); z-index: 10; }
+.note b { font-weight: 600; }
+
 @media (max-width: 860px) {
   .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
   aside { position: static; height: auto; }
   aside nav { flex-direction: row; }
   aside .foot { display: none; }
-  .g-side, .startform { grid-template-columns: minmax(0, 1fr); }
+  .g-side, .startform, .fields, .cols { grid-template-columns: minmax(0, 1fr); }
+  .toast { left: 16px; right: 16px; bottom: 16px; }
   .runbar { flex-wrap: wrap; padding: 10px 16px; position: static; }
   .page { padding: 16px 16px 40px; }
   td.outcome { max-width: 200px; }
