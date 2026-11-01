@@ -131,7 +131,7 @@ All of it in one namespace per project:
 | tiny's base: service account `tiny-session`, its Role and RoleBinding | what run pods run as |
 | tiny's egress add-on: default-deny NetworkPolicy, `tiny-egress` proxy, allow-list | the network fence |
 | Secret `tiny-agent-env` with `ANTHROPIC_API_KEY` | the key run pods use |
-| Director: service account, Role, RoleBinding, 5Gi volume, Deployment, ClusterIP Service | `deploy/director.yaml` |
+| Director: service account, Role, RoleBinding, 5Gi volume, Deployment, ClusterIP Service | `deploy/director.yaml`, applied by `boardingparty setup` |
 
 There's no Ingress, no public address and no cluster-wide role. tiny's
 `Session` CRD is cluster-wide and is installed once per cluster.
@@ -158,7 +158,13 @@ The director's Role is limited to its own namespace: sessions
 demo. [docs/e2e.md](docs/e2e.md) has the full check: install, a successful
 run, a run that gets stuck on purpose, and a watchdog timeout.
 
+First prepare the namespace with `tiny init -n bp-todomvc` and put your key in
+tiny's agent secret. Then `boardingparty setup` checks the cluster, installs
+the director and waits until it answers. Run it again to upgrade in place;
+`--dry-run` prints the manifest and applies nothing.
+
 ```
+boardingparty setup -n bp-todomvc
 boardingparty apply -f examples/todomvc.yaml -n bp-todomvc
 boardingparty run "<persona>" "<story>" --wait -n bp-todomvc
 boardingparty runs -n bp-todomvc

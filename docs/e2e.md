@@ -8,12 +8,14 @@ run at a time; the director answers 409 while another run is active.
    - default-deny network policy;
    - hostname allow-list: `api.anthropic.com`, `demo.playwright.dev`.
 
-   Then apply the director. The manifest pulls `ghcr.io/boarding-party/director:main` and
-   the worker image `ghcr.io/boarding-party/worker:main` (built by CI; for a local build use
-   `make image` and override the tags):
+   Then install the director. `setup` checks tiny's prerequisites, applies
+   `deploy/director.yaml` with server-side apply and waits until the director
+   answers. It pulls `ghcr.io/boarding-party/director:main` and the worker image
+   `ghcr.io/boarding-party/worker:main` (built by CI; pick another tag with
+   `--image-tag`):
 
    ```
-   kubectl apply -f deploy/director.yaml -n bp-todomvc
+   boardingparty setup -n bp-todomvc
    ```
 
    The director passes workers `http://bp-director.<namespace>.svc:8080`. It
