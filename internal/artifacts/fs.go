@@ -29,9 +29,15 @@ func validName(n string) bool {
 // tmpPrefix marks in-flight uploads; such names are never valid artifacts.
 const tmpPrefix = ".upload-"
 
+// File is an opened artifact: seekable, with size and modification time.
+type File interface {
+	io.ReadSeekCloser
+	Stat() (os.FileInfo, error)
+}
+
 type Store interface {
 	Put(runID, name string, r io.Reader) (int64, error)
-	Open(runID, name string) (io.ReadCloser, error)
+	Open(runID, name string) (File, error)
 	List(runID string) ([]string, error)
 }
 
@@ -77,7 +83,7 @@ func (f *fs) Put(runID, name string, r io.Reader) (int64, error) {
 	return n, nil
 }
 
-func (f *fs) Open(runID, name string) (io.ReadCloser, error) {
+func (f *fs) Open(runID, name string) (File, error) {
 	if !validName(runID) || !validName(name) {
 		return nil, ErrBadName
 	}

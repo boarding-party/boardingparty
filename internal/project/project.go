@@ -2,6 +2,8 @@
 package project
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/url"
 
@@ -40,6 +42,23 @@ func Load(b []byte) (Project, error) {
 	var p Project
 	if err := yaml.UnmarshalStrict(b, &p); err != nil {
 		return Project{}, fmt.Errorf("parse project: %w", err)
+	}
+	if err := p.validate(); err != nil {
+		return Project{}, err
+	}
+	return p, nil
+}
+
+// LoadJSON parses and validates a project from JSON, with the same rules as Load.
+func LoadJSON(b []byte) (Project, error) {
+	var p Project
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p); err != nil {
+		return Project{}, fmt.Errorf("parse project: %w", err)
+	}
+	if dec.More() {
+		return Project{}, fmt.Errorf("parse project: trailing data")
 	}
 	if err := p.validate(); err != nil {
 		return Project{}, err

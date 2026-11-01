@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -257,5 +258,95 @@ func TestStartRunUnknownPersonaIs400(t *testing.T) {
 	resp := do(t, "POST", srv.URL+"/api/runs", `{"persona":"nobody","story":"checkout"}`)
 	if resp.StatusCode != 400 {
 		t.Errorf("got %d, want 400", resp.StatusCode)
+	}
+}
+
+const fullProject = `{"name":"shop","sites":["https://a.test","https://b.test"],"extraHosts":["cdn.test"],"model":"m-1",
+"roles":[{"name":"buyer","description":"buys","canWatchRecordings":true,
+"personas":[{"name":"ann","traits":["impatient","phone"],"identity":{"email":"a@x.test","password":"pw"}}],
+"stories":[{"name":"checkout","goal":"buy a thing"}]}]}`
+
+func TestProjectJSONRoundTrip(t *testing.T) {
+	srv, _ := setup(t, 0)
+	if r := do(t, "GET", srv.URL+"/api/project", ""); r.StatusCode != 404 {
+		t.Fatalf("empty get: %d", r.StatusCode)
+	} else if b, _ := io.ReadAll(r.Body); !strings.Contains(string(b), `{"error":"no project yet"}`) {
+		t.Fatalf("body: %s", b)
+	}
+	if r := do(t, "PUT", srv.URL+"/api/project", fullProject); r.StatusCode != 204 {
+		t.Fatalf("put: %d", r.StatusCode)
+	}
+	r := do(t, "GET", srv.URL+"/api/project", "")
+	if r.StatusCode != 200 {
+		t.Fatalf("get: %d", r.StatusCode)
+	}
+	var got, want project.Project
+	if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(fullProject), &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestProjectPutInvalidIs400(t *testing.T) {
+	srv, _ := setup(t, 0)
+	r := do(t, "PUT", srv.URL+"/api/project", `{"name":"p","sites":[]}`)
+	if b, _ := io.ReadAll(r.Body); r.StatusCode != 400 || !strings.Contains(string(b), "at least one site") {
+		t.Fatalf("no sites: %d %s", r.StatusCode, b)
+	}
+	dup := `{"name":"p","sites":["https://x.test"],"roles":[{"name":"a","personas":[{"name":"ann"}]},{"name":"b","personas":[{"name":"ann"}]}]}`
+	r = do(t, "PUT", srv.URL+"/api/project", dup)
+	if b, _ := io.ReadAll(r.Body); r.StatusCode != 400 || !strings.Contains(string(b), `duplicate persona "ann"`) {
+		t.Fatalf("dup: %d %s", r.StatusCode, b)
+	}
+	if r := do(t, "PUT", srv.URL+"/api/project", `{"bogus":1}`); r.StatusCode != 400 {
+		t.Fatalf("unknown field: %d", r.StatusCode)
+	}
+	if r := do(t, "GET", srv.URL+"/api/project", ""); r.StatusCode != 404 {
+		t.Fatalf("invalid put stored something: %d", r.StatusCode)
+	}
+}
+
+func TestArtifactRangeAndTypes(t *testing.T) {
+	srv, svc := setup(t, 1<<20)
+	run := startRun(t, srv, svc)
+	data := "0123456789abcdefghij"
+	for _, n := range []string{"rec.webm", "shots.zip", "a.png", "x.bin"} {
+		if _, err := svc.Artifacts.Put(run.ID, n, strings.NewReader(data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req, _ := http.NewRequest("GET", srv.URL+"/api/runs/"+run.ID+"/artifacts/rec.webm", nil)
+	req.Header.Set("Range", "bytes=0-9")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 206 || string(b) != data[:10] {
+		t.Fatalf("range: %d %q", resp.StatusCode, b)
+	}
+	if resp.Header.Get("Content-Range") != "bytes 0-9/20" {
+		t.Fatalf("content-range %q", resp.Header.Get("Content-Range"))
+	}
+	if cd := resp.Header.Get("Content-Disposition"); cd != "inline" {
+		t.Fatalf("webm disposition %q", cd)
+	}
+	for name, ct := range map[string]string{"rec.webm": "video/webm", "shots.zip": "application/zip", "a.png": "image/png", "x.bin": "application/octet-stream"} {
+		r := do(t, "GET", srv.URL+"/api/runs/"+run.ID+"/artifacts/"+name, "")
+		if r.StatusCode != 200 || r.Header.Get("Content-Type") != ct {
+			t.Fatalf("%s: %d %q", name, r.StatusCode, r.Header.Get("Content-Type"))
+		}
+		if r.Header.Get("X-Content-Type-Options") != "nosniff" {
+			t.Fatalf("%s: no nosniff", name)
+		}
+		if name == "shots.zip" && r.Header.Get("Content-Disposition") == "inline" {
+			t.Fatal("zip must not be inline")
+		}
 	}
 }

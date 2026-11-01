@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path"
+	"strings"
 
 	"github.com/boarding-party/boardingparty/internal/artifacts"
 	"github.com/boarding-party/boardingparty/internal/project"
@@ -35,6 +37,8 @@ func Admin(svc *runs.Service, maxBytes int64) http.Handler {
 	s := &server{svc: svc, maxBytes: normalise(maxBytes)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/project", s.putProject)
+	mux.HandleFunc("PUT /api/project", s.putProjectJSON)
+	mux.HandleFunc("GET /api/project", s.getProject)
 	mux.HandleFunc("POST /api/runs", s.startRun)
 	mux.HandleFunc("GET /api/runs", s.listRuns)
 	mux.HandleFunc("GET /api/runs/{id}", s.getRun)
@@ -89,6 +93,37 @@ func (s *server) putProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) putProjectJSON(w http.ResponseWriter, r *http.Request) {
+	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "unreadable body", http.StatusBadRequest)
+		return
+	}
+	p, err := project.LoadJSON(b)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.svc.Store.PutProject(p); err != nil {
+		fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) getProject(w http.ResponseWriter, r *http.Request) {
+	p, err := s.svc.Store.Project()
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no project yet"})
+		return
+	}
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
 }
 
 func (s *server) startRun(w http.ResponseWriter, r *http.Request) {
@@ -160,16 +195,41 @@ func (s *server) getRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"run": redact(run), "bugs": bugs, "artifacts": names})
 }
 
+// artifactTypes pins the content types we serve; anything else is opaque.
+var artifactTypes = map[string]string{
+	".webm": "video/webm",
+	".mp4":  "video/mp4",
+	".zip":  "application/zip",
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".json": "application/json",
+	".txt":  "text/plain; charset=utf-8",
+}
+
 func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
-	rc, err := s.svc.Artifacts.Open(r.PathValue("id"), r.PathValue("name"))
+	name := r.PathValue("name")
+	f, err := s.svc.Artifacts.Open(r.PathValue("id"), name)
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	defer rc.Close()
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	ext := strings.ToLower(path.Ext(name))
+	ct, ok := artifactTypes[ext]
+	if !ok {
+		ct = "application/octet-stream"
+	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Type", "application/octet-stream")
-	io.Copy(w, rc)
+	w.Header().Set("Content-Type", ct)
+	if strings.HasPrefix(ct, "video/") {
+		w.Header().Set("Content-Disposition", "inline")
+	}
+	http.ServeContent(w, r, name, fi.ModTime(), f)
 }
 
 func (s *server) putArtifact(w http.ResponseWriter, r *http.Request) {
