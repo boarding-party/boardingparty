@@ -57,7 +57,10 @@ func (e *leaveEnv) log() []string {
 	return append([]string(nil), e.order...)
 }
 
+// reset clears the action log once the simulated background deletions of any
+// earlier run have landed, so they cannot be attributed to a later run.
 func (e *leaveEnv) reset() {
+	e.bg.Wait()
 	e.mu.Lock()
 	e.order = nil
 	e.mu.Unlock()
@@ -68,7 +71,8 @@ type leaveEnv struct {
 	kube  *kubefake.Clientset
 	ctrl  ctrlclient.Client
 	mu    sync.Mutex
-	order []string // "session:<name>" and "kube:<resource>/<name>" in delete order
+	bg    sync.WaitGroup // simulated async pod deletions still in flight
+	order []string       // "session:<name>" and "kube:<resource>/<name>" in delete order
 }
 
 func newLeaveEnv(t *testing.T, kubeObjs []runtime.Object, sessions ...*agentsv1.Session) *leaveEnv {
@@ -86,7 +90,9 @@ func newLeaveEnv(t *testing.T, kubeObjs []runtime.Object, sessions ...*agentsv1.
 		e.mu.Lock()
 		e.order = append(e.order, "scale:"+a.(ktesting.UpdateAction).GetObject().(*appsv1.Deployment).Name)
 		e.mu.Unlock()
+		e.bg.Add(1)
 		go func() {
+			defer e.bg.Done()
 			time.Sleep(5 * time.Millisecond)
 			_ = e.kube.CoreV1().Pods(leaveNS).Delete(context.Background(), "bp-director-pod", metav1.DeleteOptions{})
 		}()
@@ -107,7 +113,9 @@ func newLeaveEnv(t *testing.T, kubeObjs []runtime.Object, sessions ...*agentsv1.
 			e.order = append(e.order, "session:"+obj.GetName())
 			e.mu.Unlock()
 			// The pod goes away shortly after its session, as with real garbage collection.
+			e.bg.Add(1)
 			go func() {
+				defer e.bg.Done()
 				time.Sleep(5 * time.Millisecond)
 				_ = e.kube.CoreV1().Pods(leaveNS).Delete(context.Background(), obj.GetName()+"-pod", metav1.DeleteOptions{})
 			}()
