@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"path"
 	"strings"
@@ -96,6 +97,10 @@ func (s *server) putProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) putProjectJSON(w http.ResponseWriter, r *http.Request) {
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
+		http.Error(w, "content type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
 	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		http.Error(w, "unreadable body", http.StatusBadRequest)
@@ -217,6 +222,10 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	fi, err := f.Stat()
 	if err != nil {
 		fail(w, err)
+		return
+	}
+	if !fi.Mode().IsRegular() {
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	ext := strings.ToLower(path.Ext(name))

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -266,6 +267,18 @@ const fullProject = `{"name":"shop","sites":["https://a.test","https://b.test"],
 "personas":[{"name":"ann","traits":["impatient","phone"],"identity":{"email":"a@x.test","password":"pw"}}],
 "stories":[{"name":"checkout","goal":"buy a thing"}]}]}`
 
+func doJSON(t *testing.T, method, url, body string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(method, url, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
 func TestProjectJSONRoundTrip(t *testing.T) {
 	srv, _ := setup(t, 0)
 	if r := do(t, "GET", srv.URL+"/api/project", ""); r.StatusCode != 404 {
@@ -273,7 +286,7 @@ func TestProjectJSONRoundTrip(t *testing.T) {
 	} else if b, _ := io.ReadAll(r.Body); !strings.Contains(string(b), `{"error":"no project yet"}`) {
 		t.Fatalf("body: %s", b)
 	}
-	if r := do(t, "PUT", srv.URL+"/api/project", fullProject); r.StatusCode != 204 {
+	if r := doJSON(t, "PUT", srv.URL+"/api/project", fullProject); r.StatusCode != 204 {
 		t.Fatalf("put: %d", r.StatusCode)
 	}
 	r := do(t, "GET", srv.URL+"/api/project", "")
@@ -294,16 +307,16 @@ func TestProjectJSONRoundTrip(t *testing.T) {
 
 func TestProjectPutInvalidIs400(t *testing.T) {
 	srv, _ := setup(t, 0)
-	r := do(t, "PUT", srv.URL+"/api/project", `{"name":"p","sites":[]}`)
+	r := doJSON(t, "PUT", srv.URL+"/api/project", `{"name":"p","sites":[]}`)
 	if b, _ := io.ReadAll(r.Body); r.StatusCode != 400 || !strings.Contains(string(b), "at least one site") {
 		t.Fatalf("no sites: %d %s", r.StatusCode, b)
 	}
 	dup := `{"name":"p","sites":["https://x.test"],"roles":[{"name":"a","personas":[{"name":"ann"}]},{"name":"b","personas":[{"name":"ann"}]}]}`
-	r = do(t, "PUT", srv.URL+"/api/project", dup)
+	r = doJSON(t, "PUT", srv.URL+"/api/project", dup)
 	if b, _ := io.ReadAll(r.Body); r.StatusCode != 400 || !strings.Contains(string(b), `duplicate persona "ann"`) {
 		t.Fatalf("dup: %d %s", r.StatusCode, b)
 	}
-	if r := do(t, "PUT", srv.URL+"/api/project", `{"bogus":1}`); r.StatusCode != 400 {
+	if r := doJSON(t, "PUT", srv.URL+"/api/project", `{"bogus":1}`); r.StatusCode != 400 {
 		t.Fatalf("unknown field: %d", r.StatusCode)
 	}
 	if r := do(t, "GET", srv.URL+"/api/project", ""); r.StatusCode != 404 {
@@ -347,6 +360,61 @@ func TestArtifactRangeAndTypes(t *testing.T) {
 		}
 		if name == "shots.zip" && r.Header.Get("Content-Disposition") == "inline" {
 			t.Fatal("zip must not be inline")
+		}
+	}
+}
+
+func TestProjectPutNeedsJSONContentType(t *testing.T) {
+	srv, _ := setup(t, 0)
+	req, _ := http.NewRequest("PUT", srv.URL+"/api/project", strings.NewReader(fullProject))
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 415 {
+		t.Fatalf("text/plain: %d", resp.StatusCode)
+	}
+	if r := do(t, "PUT", srv.URL+"/api/project", fullProject); r.StatusCode != 415 {
+		t.Fatalf("none: %d", r.StatusCode)
+	}
+}
+
+func TestArtifactHardening(t *testing.T) {
+	root := t.TempDir()
+	srv, svc := setup(t, 1<<20)
+	run := startRun(t, srv, svc)
+	for _, n := range []string{"x.html", "x.svg", "a.png"} {
+		if _, err := svc.Artifacts.Put(run.ID, n, strings.NewReader("<script>1</script>")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, n := range []string{"x.html", "x.svg"} {
+		r := do(t, "GET", srv.URL+"/api/runs/"+run.ID+"/artifacts/"+n, "")
+		if r.StatusCode != 200 || r.Header.Get("Content-Type") != "application/octet-stream" ||
+			r.Header.Get("X-Content-Type-Options") != "nosniff" || r.Header.Get("Content-Disposition") == "inline" {
+			t.Fatalf("%s: %d %v", n, r.StatusCode, r.Header)
+		}
+	}
+	if r := do(t, "GET", srv.URL+"/api/runs/"+run.ID+"/artifacts/a.png", ""); r.Header.Get("Content-Disposition") != "" {
+		t.Fatalf("png disposition %q", r.Header.Get("Content-Disposition"))
+	}
+	// Symlink and directory in a run dir under a store we control.
+	fsStore := artifacts.NewFS(root, 1<<20)
+	svc.Artifacts = fsStore
+	dir := filepath.Join(root, run.ID)
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(root, "secret.txt")
+	os.WriteFile(secret, []byte("s"), 0o600)
+	if err := os.Symlink(secret, filepath.Join(dir, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"link.txt", "sub"} {
+		if r := do(t, "GET", srv.URL+"/api/runs/"+run.ID+"/artifacts/"+n, ""); r.StatusCode != 404 {
+			t.Fatalf("%s: %d", n, r.StatusCode)
 		}
 	}
 }

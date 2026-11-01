@@ -87,7 +87,18 @@ func (f *fs) Open(runID, name string) (File, error) {
 	if !validName(runID) || !validName(name) {
 		return nil, ErrBadName
 	}
-	file, err := os.Open(filepath.Join(f.root, runID, name))
+	full := filepath.Join(f.root, runID, name)
+	li, err := os.Lstat(full) // Lstat: refuse symlinks and directories
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !li.Mode().IsRegular() {
+		return nil, ErrNotFound
+	}
+	file, err := os.Open(full)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNotFound
 	}
