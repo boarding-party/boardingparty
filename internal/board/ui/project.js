@@ -4,7 +4,7 @@
 // Field names must match internal/project/project.go exactly: the director
 // rejects unknown fields.
 import { useState, useEffect, useRef } from './vendor/hooks.module.js';
-import { html, api, confirmDialog } from './lib.js';
+import { html, api, confirmDialog, dialogOpen } from './lib.js';
 
 // ---- model --------------------------------------------------------------
 // The draft carries a stable id on every repeatable row so inputs keep focus
@@ -182,9 +182,15 @@ export function ProjectPage({ onSaved, onDirty }) {
   // PUT the whole project on a stray keypress.
   const saveRef = useRef(save);
   saveRef.current = save;
+  const readyRef = useRef(false);
+  readyRef.current = state === 'ready' && !!draft;
   useEffect(() => {
     const key = (e) => {
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 's') { e.preventDefault(); saveRef.current(); }
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 's') {
+        e.preventDefault(); // never the browser's "save page", even when we skip
+        if (dialogOpen() || !readyRef.current) return;
+        saveRef.current();
+      }
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);

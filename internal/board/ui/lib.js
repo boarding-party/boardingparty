@@ -47,6 +47,9 @@ export const directorDown = (e) => e instanceof APIError && (e.status === 0 || e
 
 let openDialog = null;
 
+// dialogOpen reports whether a confirm dialog is showing.
+export const dialogOpen = () => !!document.querySelector('dialog.confirm[open]');
+
 export function confirmDialog(message, opts = {}) {
   return new Promise((resolve) => {
     if (!openDialog) { resolve(false); return; }
@@ -65,8 +68,9 @@ export function DialogHost() {
     const el = ref.current;
     if (d && el && !el.open) {
       el.showModal();
-      const ok = el.querySelector('[data-ok]');
-      if (ok) ok.focus();
+      // Focus the safe choice: a stray Enter must not discard or remove.
+      const safe = el.querySelector('[data-cancel]');
+      if (safe) safe.focus();
     }
   }, [d]);
   if (!d) return null;
@@ -81,7 +85,7 @@ export function DialogHost() {
         onCancel=${(e) => { e.preventDefault(); close(false); }}>
       <p id="confirm-msg">${d.message}</p>
       <div class="row end">
-        <button class="btn" type="button" onClick=${() => close(false)}>${d.cancel}</button>
+        <button class="btn" type="button" data-cancel onClick=${() => close(false)}>${d.cancel}</button>
         <button class=${'btn ' + (d.danger ? 'danger-solid' : 'primary')} type="button" data-ok onClick=${() => close(true)}>${d.confirm}</button>
       </div>
     </dialog>`;
