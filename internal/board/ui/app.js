@@ -3,9 +3,9 @@
 // Everything the director sends is untrusted (bug text is agent-written), so
 // it is only ever rendered as text through htm/Preact, which escapes it.
 // Never use innerHTML or dangerouslySetInnerHTML here.
-import { h, render } from 'preact';
-import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
-import htm from 'htm';
+import { h, render } from './vendor/preact.module.js';
+import { useState, useEffect, useRef, useCallback } from './vendor/hooks.module.js';
+import htm from './vendor/htm.module.js';
 
 const html = htm.bind(h);
 
