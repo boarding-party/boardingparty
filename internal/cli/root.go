@@ -34,9 +34,10 @@ func (g *globals) ensure(ctx context.Context, cfg *rest.Config, ns string) error
 	if d.ext, err = apiextclient.NewForConfig(cfg); err != nil {
 		return err
 	}
-	if d.apply, err = serverSideApplier(cfg); err != nil {
+	if d.apply, err = serverSideApplier(cfg, false); err != nil {
 		return err
 	}
+	d.verify = verifyDirector(cfg, ns)
 	return ensureDirector(ctx, d, setupOpts{ns: ns, tag: wantedTag(), timeout: 3 * time.Minute}, os.Stderr)
 }
 

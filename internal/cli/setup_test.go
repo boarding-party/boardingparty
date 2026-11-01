@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -13,10 +14,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	extfake "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/fake"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	kubefake "k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 )
 
 const testNS = "bp-test"
@@ -132,6 +136,12 @@ func TestRenderManifest(t *testing.T) {
 		t.Error("untagged :main left behind")
 	}
 	for _, o := range objs {
+		if o.GetKind() == "RoleBinding" {
+			subs, _, _ := unstructured.NestedSlice(o.Object, "subjects")
+			if len(subs) == 0 || subs[0].(map[string]any)["namespace"] != "bp-x" {
+				t.Errorf("RoleBinding subjects = %v", subs)
+			}
+		}
 		if o.GetNamespace() != "bp-x" {
 			t.Errorf("%s/%s namespace = %q", o.GetKind(), o.GetName(), o.GetNamespace())
 		}
@@ -139,8 +149,8 @@ func TestRenderManifest(t *testing.T) {
 }
 
 func goodDeps(applied *[]string, verifyErr error) setupDeps {
-	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: directorDeploy, Namespace: testNS},
-		Status: appsv1.DeploymentStatus{Conditions: []appsv1.DeploymentCondition{{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue}}}}
+	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: directorDeploy, Namespace: testNS, Generation: 1},
+		Status: appsv1.DeploymentStatus{ObservedGeneration: 1, UpdatedReplicas: 1, AvailableReplicas: 1, Conditions: []appsv1.DeploymentCondition{{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue}}}}
 	return setupDeps{
 		kube: kubefake.NewSimpleClientset(nsObj, saObj, dep, secret(map[string]string{"ANTHROPIC_API_KEY": "x"})),
 		ext:  extfake.NewSimpleClientset(crdWith(true)),
@@ -207,10 +217,10 @@ func TestSetupVerifyTimeout(t *testing.T) {
 func directorForTest() string { return string(deploy.Director) }
 
 func directorAt(tag string) *appsv1.Deployment {
-	return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: directorDeploy, Namespace: testNS},
+	return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: directorDeploy, Namespace: testNS, Generation: 1},
 		Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{Name: "director", Image: directorImage + ":" + tag}}}}},
-		Status: appsv1.DeploymentStatus{Conditions: []appsv1.DeploymentCondition{{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue}}}}
+		Status: appsv1.DeploymentStatus{ObservedGeneration: 1, UpdatedReplicas: 1, AvailableReplicas: 1, Conditions: []appsv1.DeploymentCondition{{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue}}}}
 }
 
 func ensureDeps(applied *[]string, withTiny bool, objs ...runtime.Object) setupDeps {
@@ -281,5 +291,134 @@ func TestEnsureDirectorCurrentIsSilent(t *testing.T) {
 	}
 	if len(applied) != 0 || out.Len() != 0 {
 		t.Errorf("applied=%v out=%q", applied, out.String())
+	}
+}
+
+func TestTagOf(t *testing.T) {
+	for in, want := range map[string]string{
+		"registry:5000/ns/director":              "",
+		"registry:5000/ns/director:1.2.3":        "1.2.3",
+		"ghcr.io/boarding-party/director:main":   "main",
+		"ghcr.io/x/director@sha256:abcdef":       "",
+		"ghcr.io/x/director:1.2.3@sha256:abcdef": "1.2.3",
+		"director":                               "",
+	} {
+		if got := tagOf(in); got != want {
+			t.Errorf("tagOf(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestRolloutComplete(t *testing.T) {
+	dep := directorAt("1.0.0")
+	dep.Generation = 2 // spec updated, controller hasn't caught up; Available is still True
+	if rolloutComplete(dep) {
+		t.Error("stale generation counted as complete")
+	}
+	dep.Status.ObservedGeneration = 2
+	dep.Status.UpdatedReplicas = 0
+	if rolloutComplete(dep) {
+		t.Error("not updated counted as complete")
+	}
+	dep.Status.UpdatedReplicas = 1
+	if !rolloutComplete(dep) {
+		t.Error("complete rollout not recognised")
+	}
+}
+
+func TestEnsureWaitsForRollout(t *testing.T) {
+	waitPoll = time.Millisecond
+	var applied []string
+	stale := directorAt("0.9.0")
+	stale.Generation = 2 // Available=True from the old pod, but not observed
+	d := ensureDeps(&applied, true, stale)
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		fresh := directorAt("1.0.0")
+		fresh.Generation, fresh.Status.ObservedGeneration = 2, 2
+		d.kube.AppsV1().Deployments(testNS).Update(context.Background(), fresh, metav1.UpdateOptions{})
+	}()
+	start := time.Now()
+	if err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: 2 * time.Second}, &strings.Builder{}); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) < 25*time.Millisecond {
+		t.Error("wait returned before the rollout completed")
+	}
+}
+
+func TestEnsureVerifies(t *testing.T) {
+	waitPoll = time.Millisecond
+	var applied []string
+	d := ensureDeps(&applied, true, directorAt("0.9.0"))
+	d.verify = func(context.Context) error { return errors.New("not yet") }
+	err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: 50 * time.Millisecond}, &strings.Builder{})
+	if err == nil || !strings.Contains(err.Error(), "not yet") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestWaitErrorIsReported(t *testing.T) {
+	waitPoll = time.Millisecond
+	var applied []string
+	d := ensureDeps(&applied, true)
+	d.kube.(*kubefake.Clientset).PrependReactor("get", "deployments", func(ktesting.Action) (bool, runtime.Object, error) {
+		if len(applied) > 0 {
+			return true, nil, errors.New("apiserver on fire")
+		}
+		return false, nil, nil
+	})
+	err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: 50 * time.Millisecond}, &strings.Builder{})
+	if err == nil || !strings.Contains(err.Error(), "apiserver on fire") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func forbidden(resource string) error {
+	return apierrors.NewForbidden(schema.GroupResource{Resource: resource}, "x", errors.New("nope"))
+}
+
+func TestPreflightForbiddenClusterReadsWarn(t *testing.T) {
+	kube := kubefake.NewSimpleClientset(saObj, secret(map[string]string{"ANTHROPIC_API_KEY": "x"}))
+	kube.PrependReactor("get", "namespaces", func(ktesting.Action) (bool, runtime.Object, error) { return true, nil, forbidden("namespaces") })
+	ext := extfake.NewSimpleClientset()
+	ext.PrependReactor("get", "customresourcedefinitions", func(ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, forbidden("customresourcedefinitions")
+	})
+	var out strings.Builder
+	if preflight(context.Background(), kube, ext, testNS, &out) {
+		t.Errorf("should continue:\n%s", out.String())
+	}
+	for _, w := range []string{"! CRD", "no permission (get customresourcedefinitions)", "! namespace", "✓ service account"} {
+		if !strings.Contains(out.String(), w) {
+			t.Errorf("missing %q:\n%s", w, out.String())
+		}
+	}
+}
+
+func TestEnsureForbiddenNamespacedIsNotTinyMissing(t *testing.T) {
+	var applied []string
+	d := ensureDeps(&applied, true)
+	d.kube.(*kubefake.Clientset).PrependReactor("get", "secrets", func(ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, forbidden("secrets")
+	})
+	err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &strings.Builder{})
+	if err == nil || strings.Contains(err.Error(), "tiny init") || !strings.Contains(err.Error(), "no permission (get secrets)") {
+		t.Errorf("err = %v", err)
+	}
+	if len(applied) != 0 {
+		t.Errorf("applied %v", applied)
+	}
+}
+
+func TestConflictHint(t *testing.T) {
+	var applied []string
+	d := ensureDeps(&applied, true)
+	d.apply = func(context.Context, *unstructured.Unstructured) error {
+		return apierrors.NewConflict(schema.GroupResource{Resource: "deployments"}, "bp-director", fmt.Errorf("conflict"))
+	}
+	err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &strings.Builder{})
+	if err == nil || !strings.Contains(err.Error(), "boardingparty setup --force-conflicts") {
+		t.Errorf("err = %v", err)
 	}
 }

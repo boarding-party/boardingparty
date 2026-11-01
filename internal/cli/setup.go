@@ -15,7 +15,6 @@ import (
 	"github.com/boarding-party/boardingparty/deploy"
 	"github.com/spf13/cobra"
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	apiextclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -49,6 +48,9 @@ const (
 type checker struct {
 	out    io.Writer
 	failed bool
+	// notSetUp is set when a check proved tiny's setup is absent or too old,
+	// as opposed to a check we weren't allowed to make.
+	notSetUp bool
 }
 
 func (c *checker) ok(format string, a ...any) {
@@ -56,6 +58,10 @@ func (c *checker) ok(format string, a ...any) {
 }
 func (c *checker) warn(format string, a ...any) {
 	fmt.Fprintf(c.out, "! %s\n", clean(fmt.Sprintf(format, a...)))
+}
+func (c *checker) missing(format string, a ...any) {
+	c.notSetUp = true
+	c.fail(format, a...)
 }
 func (c *checker) fail(format string, a ...any) {
 	c.failed = true
@@ -65,13 +71,24 @@ func (c *checker) fail(format string, a ...any) {
 // preflight runs the read-only checks and reports whether any failed.
 // It never prints Secret values, only key names.
 func preflight(ctx context.Context, kube kubernetes.Interface, ext apiextclient.Interface, ns string, out io.Writer) (failed bool) {
+	return preflightCheck(ctx, kube, ext, ns, out).failed
+}
+
+// denied reports a read the user's credentials aren't allowed to make.
+func denied(verb, resource string) string {
+	return fmt.Sprintf("couldn't check: no permission (%s %s)", verb, resource)
+}
+
+func preflightCheck(ctx context.Context, kube kubernetes.Interface, ext apiextclient.Interface, ns string, out io.Writer) *checker {
 	c := &checker{out: out}
 	tinyInit := fmt.Sprintf("run `tiny init -n %s`", ns)
 
 	crd, err := ext.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, sessionCRD, metav1.GetOptions{})
 	switch {
 	case apierrors.IsNotFound(err):
-		c.fail("CRD %s not found: tiny isn't installed, %s", sessionCRD, tinyInit)
+		c.missing("CRD %s not found: tiny isn't installed, %s", sessionCRD, tinyInit)
+	case apierrors.IsForbidden(err):
+		c.warn("CRD %s: %s; skipped, the check needs cluster-scoped read access", sessionCRD, denied("get", "customresourcedefinitions"))
 	case err != nil:
 		c.fail("CRD %s: %v", sessionCRD, err)
 	default:
@@ -89,15 +106,17 @@ func preflight(ctx context.Context, kube kubernetes.Interface, ext apiextclient.
 		if has {
 			c.ok("CRD %s has spec.mcpServers", sessionCRD)
 		} else {
-			c.fail("CRD %s lacks spec.mcpServers: tiny is older than v0.11.0, upgrade tiny", sessionCRD)
+			c.missing("CRD %s lacks spec.mcpServers: tiny is older than v0.11.0, upgrade tiny", sessionCRD)
 		}
 	}
 
 	_, err = kube.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
-	nsOK := err == nil
+	nsOK := err == nil || apierrors.IsForbidden(err)
 	switch {
 	case apierrors.IsNotFound(err):
-		c.fail("namespace %s not found: %s", ns, tinyInit)
+		c.missing("namespace %s not found: %s", ns, tinyInit)
+	case apierrors.IsForbidden(err):
+		c.warn("namespace %s: %s; skipped, the check needs cluster-scoped read access", ns, denied("get", "namespaces"))
 	case err != nil:
 		c.fail("namespace %s: %v", ns, err)
 	default:
@@ -107,7 +126,9 @@ func preflight(ctx context.Context, kube kubernetes.Interface, ext apiextclient.
 		_, err = kube.CoreV1().ServiceAccounts(ns).Get(ctx, sessionSA, metav1.GetOptions{})
 		switch {
 		case apierrors.IsNotFound(err):
-			c.fail("service account %s not found in %s: %s", sessionSA, ns, tinyInit)
+			c.missing("service account %s not found in %s: %s", sessionSA, ns, tinyInit)
+		case apierrors.IsForbidden(err):
+			c.fail("service account %s: %s", sessionSA, denied("get", "serviceaccounts"))
 		case err != nil:
 			c.fail("service account %s: %v", sessionSA, err)
 		default:
@@ -118,14 +139,17 @@ func preflight(ctx context.Context, kube kubernetes.Interface, ext apiextclient.
 	checkAgentSecret(ctx, kube, ns, c)
 	checkEgress(ctx, kube, ns, c)
 	c.warn("network policies are only enforced if your CNI enforces them")
-	return c.failed
+	return c
 }
 
 func checkAgentSecret(ctx context.Context, kube kubernetes.Interface, ns string, c *checker) {
 	sec, err := kube.CoreV1().Secrets(ns).Get(ctx, agentSecret, metav1.GetOptions{})
 	switch {
 	case apierrors.IsNotFound(err):
-		c.fail("secret %s not found in %s: add your agent credentials to tiny's agent secret", agentSecret, ns)
+		c.missing("secret %s not found in %s: add your agent credentials to tiny's agent secret", agentSecret, ns)
+		return
+	case apierrors.IsForbidden(err):
+		c.fail("secret %s: %s", agentSecret, denied("get", "secrets"))
 		return
 	case err != nil:
 		c.fail("secret %s: %v", agentSecret, err)
@@ -139,7 +163,7 @@ func checkAgentSecret(ctx context.Context, kube kubernetes.Interface, ns string,
 	case oauth:
 		c.warn("secret %s has only CLAUDE_CODE_OAUTH_TOKEN: a subscription token; automated runs should use a metered ANTHROPIC_API_KEY under Anthropic's terms", agentSecret)
 	default:
-		c.fail("secret %s has neither ANTHROPIC_API_KEY nor CLAUDE_CODE_OAUTH_TOKEN", agentSecret)
+		c.missing("secret %s has neither ANTHROPIC_API_KEY nor CLAUDE_CODE_OAUTH_TOKEN", agentSecret)
 	}
 }
 
@@ -173,7 +197,7 @@ func renderManifest(raw []byte, ns, tag string) ([]*unstructured.Unstructured, e
 	text := strings.ReplaceAll(string(raw), directorImage+":main", directorImage+":"+tag)
 	text = strings.ReplaceAll(text, workerImage+":main", workerImage+":"+tag)
 	var objs []*unstructured.Unstructured
-	for _, doc := range strings.Split(text, "\n---") {
+	for _, doc := range strings.Split(text, "\n---\n") {
 		if strings.TrimSpace(doc) == "" {
 			continue
 		}
@@ -216,6 +240,7 @@ func printManifest(out io.Writer, objs []*unstructured.Unstructured) error {
 type setupOpts struct {
 	ns, tag string
 	dryRun  bool
+	force   bool
 	timeout time.Duration
 }
 
@@ -247,37 +272,51 @@ func runSetup(ctx context.Context, d setupDeps, o setupOpts, out io.Writer) erro
 	if err := installDirector(wctx, d, o, objs, out); err != nil {
 		return err
 	}
+	if err := waitVerify(wctx, d); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "✓ director ready\n\nNext:\n  boardingparty apply -f project.yaml -n %s\n  boardingparty run \"<persona>\" \"<story>\" --wait -n %s\n", o.ns, o.ns)
+	return nil
+}
+
+// installDirector applies the objects one by one and waits for the rollout.
+func installDirector(ctx context.Context, d setupDeps, o setupOpts, objs []*unstructured.Unstructured, out io.Writer) error {
+	for _, obj := range objs {
+		if err := d.apply(ctx, obj); err != nil {
+			if apierrors.IsConflict(err) && !o.force {
+				return fmt.Errorf("apply %s/%s: %w\nthe director was previously applied by another tool; run `boardingparty setup --force-conflicts` once", obj.GetKind(), obj.GetName(), err)
+			}
+			return fmt.Errorf("apply %s/%s: %w", obj.GetKind(), obj.GetName(), err)
+		}
+		fmt.Fprintf(out, "✓ %s/%s\n", clean(obj.GetKind()), clean(obj.GetName()))
+	}
+	var lastErr error
+	err := wait.PollUntilContextCancel(ctx, waitPoll, true, func(ctx context.Context) (bool, error) {
+		dep, err := d.kube.AppsV1().Deployments(o.ns).Get(ctx, directorDeploy, metav1.GetOptions{})
+		if err != nil {
+			lastErr = err
+			return false, nil
+		}
+		lastErr = nil
+		return rolloutComplete(dep), nil
+	})
+	if err != nil {
+		return fmt.Errorf("deployment %s not rolled out within %s: %v (last error: %v)", directorDeploy, o.timeout, err, lastErr)
+	}
+	fmt.Fprintf(out, "✓ deployment/%s rolled out\n", directorDeploy)
+	return nil
+}
+
+// waitVerify retries the admin-API check until it passes or ctx ends.
+func waitVerify(ctx context.Context, d setupDeps) error {
 	var verr error
-	err = wait.PollUntilContextCancel(wctx, waitPoll, true, func(ctx context.Context) (bool, error) {
+	err := wait.PollUntilContextCancel(ctx, waitPoll, true, func(ctx context.Context) (bool, error) {
 		verr = d.verify(ctx)
 		return verr == nil, nil
 	})
 	if err != nil {
 		return fmt.Errorf("director not answering: %v (last error: %v)", err, verr)
 	}
-	fmt.Fprintf(out, "✓ director ready\n\nNext:\n  boardingparty apply -f project.yaml -n %s\n  boardingparty run \"<persona>\" \"<story>\" --wait -n %s\n", o.ns, o.ns)
-	return nil
-}
-
-// installDirector applies the objects one by one and waits for the Deployment.
-func installDirector(ctx context.Context, d setupDeps, o setupOpts, objs []*unstructured.Unstructured, out io.Writer) error {
-	for _, obj := range objs {
-		if err := d.apply(ctx, obj); err != nil {
-			return fmt.Errorf("apply %s/%s: %w", obj.GetKind(), obj.GetName(), err)
-		}
-		fmt.Fprintf(out, "✓ %s/%s\n", clean(obj.GetKind()), clean(obj.GetName()))
-	}
-	err := wait.PollUntilContextCancel(ctx, waitPoll, true, func(ctx context.Context) (bool, error) {
-		dep, err := d.kube.AppsV1().Deployments(o.ns).Get(ctx, directorDeploy, metav1.GetOptions{})
-		if err != nil {
-			return false, nil
-		}
-		return deploymentAvailable(dep), nil
-	})
-	if err != nil {
-		return fmt.Errorf("deployment %s not available within %s: %w", directorDeploy, o.timeout, err)
-	}
-	fmt.Fprintf(out, "✓ deployment/%s available\n", directorDeploy)
 	return nil
 }
 
@@ -296,12 +335,16 @@ func ensureDirector(ctx context.Context, d setupDeps, o setupOpts, out io.Writer
 	}
 	upgrade := err == nil
 	var buf strings.Builder
-	if preflight(ctx, d.kube, d.ext, o.ns, &buf) {
+	if pc := preflightCheck(ctx, d.kube, d.ext, o.ns, &buf); pc.failed {
 		var failed []string
 		for _, l := range strings.Split(buf.String(), "\n") {
 			if strings.HasPrefix(l, "✗") {
 				failed = append(failed, l)
 			}
+		}
+		if !pc.notSetUp {
+			return fmt.Errorf("couldn't check tiny's setup in namespace %s: your credentials lack a permission\n%s",
+				o.ns, strings.Join(failed, "\n"))
 		}
 		return fmt.Errorf("tiny isn't set up in namespace %s: run `tiny init -n %s` (and `tiny setup` for the agent key)\n%s",
 			o.ns, o.ns, strings.Join(failed, "\n"))
@@ -322,17 +365,30 @@ func ensureDirector(ctx context.Context, d setupDeps, o setupOpts, out io.Writer
 	}
 	wctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
-	return installDirector(wctx, d, o, objs, out)
+	if err := installDirector(wctx, d, o, objs, out); err != nil {
+		return err
+	}
+	return waitVerify(wctx, d)
 }
 
-// imageTag returns the tag of the director container image, or "".
+// imageTag returns the tag of the director container image, or "" when the
+// image has none (untagged or digest-only).
 func imageTag(dep *appsv1.Deployment) string {
 	for _, c := range dep.Spec.Template.Spec.Containers {
 		if c.Name == "director" {
-			if i := strings.LastIndex(c.Image, ":"); i >= 0 {
-				return c.Image[i+1:]
-			}
+			return tagOf(c.Image)
 		}
+	}
+	return ""
+}
+
+func tagOf(image string) string {
+	if i := strings.IndexByte(image, '@'); i >= 0 {
+		image = image[:i]
+	}
+	last := image[strings.LastIndex(image, "/")+1:] // a registry port sits before the last slash
+	if j := strings.LastIndex(last, ":"); j >= 0 {
+		return last[j+1:]
 	}
 	return ""
 }
@@ -347,17 +403,21 @@ func wantedTag() string {
 	return defaultImageTag
 }
 
-func deploymentAvailable(dep *appsv1.Deployment) bool {
-	for _, c := range dep.Status.Conditions {
-		if c.Type == appsv1.DeploymentAvailable {
-			return c.Status == corev1.ConditionTrue
-		}
+// rolloutComplete is true once the controller has seen the latest spec and
+// every replica is updated and available. The Available condition alone is not
+// enough: it stays true on the old pod right after an apply.
+func rolloutComplete(dep *appsv1.Deployment) bool {
+	want := int32(1)
+	if dep.Spec.Replicas != nil {
+		want = *dep.Spec.Replicas
 	}
-	return false
+	st := dep.Status
+	return st.ObservedGeneration >= dep.Generation && st.UpdatedReplicas == want &&
+		st.AvailableReplicas == want && st.UnavailableReplicas == 0
 }
 
-// serverSideApplier applies objects with server-side apply, conflicts not forced.
-func serverSideApplier(cfg *rest.Config) (func(context.Context, *unstructured.Unstructured) error, error) {
+// serverSideApplier applies objects with server-side apply, conflicts forced only when asked.
+func serverSideApplier(cfg *rest.Config, force bool) (func(context.Context, *unstructured.Unstructured) error, error) {
 	dc, err := dynamic.NewForConfig(cfg)
 	if err != nil {
 		return nil, err
@@ -377,7 +437,6 @@ func serverSideApplier(cfg *rest.Config) (func(context.Context, *unstructured.Un
 		if err != nil {
 			return err
 		}
-		force := false
 		_, err = dc.Resource(m.Resource).Namespace(obj.GetNamespace()).Patch(ctx, obj.GetName(), types.ApplyPatchType, body,
 			metav1.PatchOptions{FieldManager: fieldManager, Force: &force})
 		return err
@@ -433,7 +492,7 @@ func newSetup(g *globals) *cobra.Command {
 			if d.ext, err = apiextclient.NewForConfig(cfg); err != nil {
 				return err
 			}
-			if d.apply, err = serverSideApplier(cfg); err != nil {
+			if d.apply, err = serverSideApplier(cfg, o.force); err != nil {
 				return err
 			}
 			d.verify = verifyDirector(cfg, o.ns)
@@ -442,6 +501,7 @@ func newSetup(g *globals) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&o.tag, "image-tag", wantedTag(), "director and worker image tag")
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "run the checks and print the rendered manifest; apply nothing")
+	cmd.Flags().BoolVar(&o.force, "force-conflicts", false, "take over fields owned by another tool (use once after a kubectl apply)")
 	cmd.Flags().DurationVar(&o.timeout, "timeout", 3*time.Minute, "how long to wait for the director")
 	return cmd
 }

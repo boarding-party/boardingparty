@@ -131,7 +131,7 @@ All of it in one namespace per project:
 | tiny's base: service account `tiny-session`, its Role and RoleBinding | what run pods run as |
 | tiny's egress add-on: default-deny NetworkPolicy, `tiny-egress` proxy, allow-list | the network fence |
 | Secret `tiny-agent-env` with `ANTHROPIC_API_KEY` | the key run pods use |
-| Director: service account, Role, RoleBinding, 5Gi volume, Deployment, ClusterIP Service | `deploy/director.yaml`, applied by `boardingparty setup` |
+| Director: service account, Role, RoleBinding, 5Gi volume, Deployment, ClusterIP Service | `deploy/director.yaml`, installed on first use or by `boardingparty setup` |
 
 There's no Ingress, no public address and no cluster-wide role. tiny's
 `Session` CRD is cluster-wide and is installed once per cluster.
