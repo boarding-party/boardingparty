@@ -137,6 +137,6 @@ func NewRoot() *cobra.Command {
 	root := &cobra.Command{Use: "boardingparty", Short: "Drive boardingparty test runs on your cluster", SilenceUsage: true, SilenceErrors: true}
 	root.PersistentFlags().StringVar(&g.kubeContext, "context", "", "kubeconfig context (asked for on a terminal; default: current)")
 	root.PersistentFlags().StringVarP(&g.namespace, "namespace", "n", "", "director namespace (asked for on a terminal; required elsewhere)")
-	root.AddCommand(newSetup(g), newApply(g), newRun(g), newRuns(g), newGet(g))
+	root.AddCommand(newSetup(g), newApply(g), newRun(g), newRuns(g), newGet(g), newLeave(g))
 	return root
 }
