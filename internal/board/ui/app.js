@@ -3,44 +3,16 @@
 // Everything the director sends is untrusted (bug text is agent-written), so
 // it is only ever rendered as text through htm/Preact, which escapes it.
 // Never use innerHTML or dangerouslySetInnerHTML here.
-import { h, render } from './vendor/preact.module.js';
+import { render } from './vendor/preact.module.js';
 import { useState, useEffect, useRef, useCallback } from './vendor/hooks.module.js';
-import htm from './vendor/htm.module.js';
-
-const html = htm.bind(h);
+import { html, api, directorDown } from './lib.js';
 
 const ACTIVE = new Set(['pending', 'running']);
-const STATE_TAG = { pending: 'idle', running: 'run', done: 'ok', stuck: 'wait', failed: 'bad' };
+const STATE_TAG = new Map([['pending', 'idle'], ['running', 'run'], ['done', 'ok'], ['stuck', 'wait'], ['failed', 'bad']]);
+const RETRY_MS = [5000, 10000, 30000]; // back-off after consecutive errors
+const MAX_FINISHED_FAILURES = 5;
 const ACTIVE_POLL_MS = 5000;
 const IDLE_POLL_MS = 30000;
-
-// ---- API ----------------------------------------------------------------
-
-class APIError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
-}
-
-// api calls the director through the board's proxy. Non-2xx responses throw
-// an APIError carrying the server's message verbatim (JSON {"error"} or the
-// plain-text body http.Error writes).
-async function api(path, opts = {}) {
-  let res;
-  try {
-    res = await fetch(path, { credentials: 'same-origin', ...opts });
-  } catch (e) {
-    throw new APIError(0, 'Cannot reach the board server. Is boardingparty board still running?');
-  }
-  if (res.status === 204) return null;
-  const text = await res.text();
-  if (!res.ok) {
-    let msg = text.trim();
-    try { const j = JSON.parse(text); if (j && typeof j.error === 'string') msg = j.error; } catch (_) { /* plain text */ }
-    throw new APIError(res.status, msg || res.statusText || `HTTP ${res.status}`);
-  }
-  return text ? JSON.parse(text) : null;
-}
-
-const directorDown = (e) => e instanceof APIError && (e.status === 0 || e.status === 502 || e.status === 503 || e.status === 504);
 
 // ---- helpers ------------------------------------------------------------
 
@@ -135,12 +107,15 @@ function useRoute() {
 }
 
 // usePoll calls fn now, then again after however many ms fn returns, until
-// fn returns null or the component unmounts or deps change.
+// fn returns null or the component unmounts or deps change. fn gets a
+// stale() check: after each await it must bail out (return null) if stale()
+// is true, so a late response never lands in an unmounted or re-keyed view.
 function usePoll(fn, deps) {
   useEffect(() => {
     let stop = false, timer;
+    const stale = () => stop;
     const tick = async () => {
-      const next = await fn();
+      const next = await fn(stale);
       if (!stop && next != null) timer = setTimeout(tick, next);
     };
     tick();
@@ -182,8 +157,9 @@ function App() {
     }
   }, []);
 
-  usePoll(async () => {
+  usePoll(async (stale) => {
     const rs = await loadRuns();
+    if (stale()) return null;
     return rs && rs.some((r) => ACTIVE.has(r.state)) ? ACTIVE_POLL_MS : IDLE_POLL_MS;
   }, [loadRuns]);
 
@@ -196,7 +172,7 @@ function App() {
       <${Sidebar} route=${route} project=${project} runs=${runs} />
       <main>
         <${RunStrip} director=${director} active=${active} />
-        ${route.page === 'run' ? html`<${RunPage} id=${route.id} onChange=${loadRuns} />`
+        ${route.page === 'run' ? html`<${RunPage} key=${route.id} id=${route.id} onChange=${loadRuns} />`
           : route.page === 'project' ? html`<${ProjectPage} project=${project} error=${projectErr} />`
           : html`<${RunsPage} project=${project} projectErr=${projectErr} runs=${runs} runsErr=${runsErr}
                     active=${active} onStarted=${loadRuns} />`}
@@ -333,7 +309,7 @@ function StartRun({ project, active, onStarted }) {
 }
 
 function StateTag({ state }) {
-  return html`<span class=${'tag ' + (STATE_TAG[state] || 'idle')}>${state || 'unknown'}</span>`;
+  return html`<span class=${'tag ' + (STATE_TAG.get(state) || 'idle')}>${state || 'unknown'}</span>`;
 }
 
 function RunsTable({ runs }) {
@@ -366,12 +342,15 @@ function RunPage({ id, onChange }) {
   const [duration, setDuration] = useState(0); // seconds, once the video's metadata is in
   const video = useRef(null);
   const lastState = useRef('');
-  useEffect(() => { setData(null); setErr(''); setMissing(false); setDuration(0); lastState.current = ''; }, [id]);
+  const failures = useRef(0);
+  const [gaveUp, setGaveUp] = useState(false);
 
-  usePoll(async () => {
+  usePoll(async (stale) => {
     try {
       const d = await api(`/api/runs/${encodeURIComponent(id)}`);
-      setData(d); setErr(''); setMissing(false);
+      if (stale()) return null;
+      failures.current = 0;
+      setData(d); setErr(''); setMissing(false); setGaveUp(false);
       const st = d && d.run ? d.run.state : '';
       const prev = lastState.current;
       lastState.current = st;
@@ -380,9 +359,13 @@ function RunPage({ id, onChange }) {
       // Just finished: look once more for files uploaded at the end.
       return ACTIVE.has(prev) ? ACTIVE_POLL_MS : null;
     } catch (e) {
+      if (stale()) return null;
       if (e.status === 404) { setMissing(true); return null; }
       setErr(e.message);
-      return ACTIVE_POLL_MS;
+      const n = ++failures.current;
+      // A finished run has nothing new to show; give up after a few tries.
+      if (lastState.current && !ACTIVE.has(lastState.current) && n >= MAX_FINISHED_FAILURES) { setGaveUp(true); return null; }
+      return RETRY_MS[Math.min(n, RETRY_MS.length) - 1];
     }
   }, [id]);
 
@@ -413,7 +396,7 @@ function RunPage({ id, onChange }) {
       <p class="crumb"><a href="#/runs">Runs</a> / ${run.id}</p>
       <h1>${run.persona} · ${run.story} <${StateTag} state=${run.state} /></h1>
       <p class="lede">${run.role ? `${run.role}. ` : ''}Started ${fmtFull(run.started)}${finished ? `, took ${took}` : took ? `, ${took} so far` : ''}.</p>
-      ${err ? html`<div class="note bad banner">Lost contact with the director: ${err}. Retrying.</div>` : null}
+      ${err ? html`<div class="note bad banner">Lost contact with the director: ${err}. ${gaveUp ? 'Reload the page to try again.' : 'Retrying.'}</div>` : null}
       <div class="grid g-side">
         <div class="stack">
           <div class="player">
@@ -458,7 +441,7 @@ function RunPage({ id, onChange }) {
     </section>`;
 }
 
-const SEVERITY_TAG = { high: 'bad', critical: 'bad', medium: 'wait', low: 'idle' };
+const SEVERITY_TAG = new Map([['high', 'bad'], ['critical', 'bad'], ['medium', 'wait'], ['low', 'idle']]);
 
 // A bug seeks only when its text carries a time that fits inside the
 // recording; that also keeps clock times such as "Wed 16:00" from seeking.
@@ -468,7 +451,7 @@ function Bug({ bug, duration, onSeek }) {
   const secs = found !== null && duration > 0 && found <= Math.ceil(duration) ? found : null;
   const seekable = secs !== null;
   const body = html`
-    <span class=${'tag ' + (SEVERITY_TAG[(bug.severity || '').toLowerCase()] || 'idle')}>${bug.severity || 'unrated'}</span>
+    <span class=${'tag ' + (SEVERITY_TAG.get((bug.severity || '').toLowerCase()) || 'idle')}>${bug.severity || 'unrated'}</span>
     <span class="sum">${bug.summary}</span>
     ${secs !== null ? html`<span class="stamp">${fmtStamp(secs)}</span>` : html`<span></span>`}
     ${bug.step ? html`<span class="meta"><b>Step:</b> ${bug.step}</span>` : null}
