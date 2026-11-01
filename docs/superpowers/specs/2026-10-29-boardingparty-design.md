@@ -235,15 +235,14 @@ channel-specific code.
   marked fixed + 7 days. Configurable.
 
 ### 4.6 CLI and web UI
-- `boardingparty` CLI (Go). `boardingparty ui` serves the web UI on
-  localhost and port-forwards to the director of the selected project.
-  `boardingparty install` requires the tiny controller already on the
-  cluster (checked, with a clear message if missing). It creates the
-  namespace, sets it up for tiny through tiny's own existing mechanisms
-  (service account, agent env secret holding the API key, default-deny
-  policy, hostname allow-list), then installs director, worker
-  RBAC (create/delete Sessions in this namespace only). Also `start`, `stop`,
-  `status`, `report` for scripting.
+- The user-facing entry point is ONE command (decided 2026-11-01):
+  `boardingparty board -n <namespace>`. It checks tiny is set up (fails with
+  "run `tiny init`" otherwise; tiny setup stays the user's job), installs or
+  upgrades the director on first use, opens a port-forward, serves the web UI
+  on localhost and prints its URL (with a per-launch random token, ruling
+  R10). Everything else (projects, roles, starting/stopping the cast,
+  reports) happens in the UI. The scripting subcommands (`setup`, `apply`,
+  `run`, `runs`, `get`) stay for CI and power users.
 - UI is static assets embedded in the CLI binary. Pages per the approved
   prototype (`docs/superpowers/specs/2026-10-29-boardingparty-prototype.html`):
   Projects, New project (cluster → site → model and budget → install),
