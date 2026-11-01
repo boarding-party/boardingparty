@@ -243,6 +243,12 @@ channel-specific code.
   R10). Everything else (projects, roles, starting/stopping the cast,
   reports) happens in the UI. The scripting subcommands (`setup`, `apply`,
   `run`, `runs`, `get`) stay for CI and power users.
+- Cleanup is the matching single command: `boardingparty leave -n <namespace>`.
+  It stops any active run, deletes run sessions (foreground) and every object
+  boardingparty installed (director ServiceAccount, Role, RoleBinding,
+  Deployment, Service, PVC). `--keep-data` keeps the PVC (SQLite and
+  recordings) so a later `board` picks up where it left off. It never touches
+  anything tiny owns; removing tiny is tiny's job.
 - UI is static assets embedded in the CLI binary. Pages per the approved
   prototype (`docs/superpowers/specs/2026-10-29-boardingparty-prototype.html`):
   Projects, New project (cluster → site → model and budget → install),
