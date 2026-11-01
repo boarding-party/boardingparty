@@ -164,9 +164,18 @@ apply` (or any other command) installs the director and waits for it, and a
 newer CLI upgrades it in place. If tiny isn't set up, the command stops and
 tells you to run `tiny init`; it never changes anything tiny owns.
 
-`boardingparty setup -n bp-todomvc` is the same step run on its own, so you can
+`boardingparty setup` is the same step run on its own, so you can
 review it first: it prints the checks, and `--dry-run` shows the manifest
 without applying anything.
+
+Every command works on one cluster and namespace. Leave out `--context` and
+`-n` in a terminal and the CLI asks: first the kubeconfig context (your
+current one is preselected), then the namespace, with the ones where tiny is
+set up listed first. It remembers your last choice, preselects it next time,
+and prints `target: <context> / <namespace>` on every command so you always
+see where it is acting. Esc cancels without changing anything. In CI, with no
+terminal, it never asks: pass `-n <namespace>` (and `--context` if you don't
+want the current one).
 
 ```
 boardingparty apply -f examples/todomvc.yaml -n bp-todomvc
