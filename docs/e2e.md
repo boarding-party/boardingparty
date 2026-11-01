@@ -8,15 +8,13 @@ run at a time; the director answers 409 while another run is active.
    - default-deny network policy;
    - hostname allow-list: `api.anthropic.com`, `demo.playwright.dev`.
 
-   Then install the director. `setup` checks tiny's prerequisites, applies
-   `deploy/director.yaml` with server-side apply and waits until the director
-   answers. It pulls `ghcr.io/boarding-party/director:main` and the worker image
-   `ghcr.io/boarding-party/worker:main` (built by CI; pick another tag with
-   `--image-tag`):
-
-   ```
-   boardingparty setup -n bp-todomvc
-   ```
+   The director installs itself on the first command that needs it (step 2).
+   To do it earlier, or to review the manifest with `--dry-run`, run
+   `boardingparty setup -n bp-todomvc`. Either way it applies
+   `deploy/director.yaml` with server-side apply and pulls
+   `ghcr.io/boarding-party/director` and `ghcr.io/boarding-party/worker` (built
+   by CI; the tag follows the CLI's release version, else `main`; override it
+   with `setup --image-tag`).
 
    The director passes workers `http://bp-director.<namespace>.svc:8080`. It
    must be a `.svc` name: tiny's egress proxy only bypasses `.svc` and

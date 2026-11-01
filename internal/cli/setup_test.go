@@ -205,3 +205,81 @@ func TestSetupVerifyTimeout(t *testing.T) {
 }
 
 func directorForTest() string { return string(deploy.Director) }
+
+func directorAt(tag string) *appsv1.Deployment {
+	return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: directorDeploy, Namespace: testNS},
+		Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "director", Image: directorImage + ":" + tag}}}}},
+		Status: appsv1.DeploymentStatus{Conditions: []appsv1.DeploymentCondition{{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue}}}}
+}
+
+func ensureDeps(applied *[]string, withTiny bool, objs ...runtime.Object) setupDeps {
+	if withTiny {
+		objs = append(objs, nsObj, saObj, secret(map[string]string{"ANTHROPIC_API_KEY": "x"}))
+	}
+	d := goodDeps(applied, nil)
+	d.kube = kubefake.NewSimpleClientset(objs...)
+	if !withTiny {
+		d.ext = extfake.NewSimpleClientset()
+	}
+	return d
+}
+
+func TestEnsureDirectorMissingInstalls(t *testing.T) {
+	waitPoll = time.Millisecond
+	var applied []string
+	d := ensureDeps(&applied, true)
+	// The fake never creates the Deployment on apply, so add it once applied.
+	d.apply = func(_ context.Context, o *unstructured.Unstructured) error {
+		applied = append(applied, o.GetKind())
+		if o.GetKind() == "Deployment" {
+			_, err := d.kube.AppsV1().Deployments(testNS).Create(context.Background(), directorAt("1.0.0"), metav1.CreateOptions{})
+			return err
+		}
+		return nil
+	}
+	var out strings.Builder
+	if err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(applied) != 6 || !strings.Contains(out.String(), "installing the director") || !strings.Contains(out.String(), "! network policies") {
+		t.Errorf("applied=%v out=%s", applied, out.String())
+	}
+}
+
+func TestEnsureDirectorTinyMissing(t *testing.T) {
+	var applied []string
+	err := ensureDirector(context.Background(), ensureDeps(&applied, false), setupOpts{ns: testNS, tag: "main", timeout: time.Second}, &strings.Builder{})
+	if err == nil || !strings.Contains(err.Error(), "run `tiny init -n "+testNS+"`") || !strings.Contains(err.Error(), "✗ CRD") {
+		t.Errorf("err = %v", err)
+	}
+	if len(applied) != 0 {
+		t.Errorf("applied %v", applied)
+	}
+}
+
+func TestEnsureDirectorUpgrade(t *testing.T) {
+	waitPoll = time.Millisecond
+	var applied []string
+	var out strings.Builder
+	d := ensureDeps(&applied, true, directorAt("0.9.0"))
+	if err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(applied) != 6 || !strings.Contains(out.String(), "upgrading the director in "+testNS+" (0.9.0 -> 1.0.0)") {
+		t.Errorf("applied=%v out=%s", applied, out.String())
+	}
+}
+
+func TestEnsureDirectorCurrentIsSilent(t *testing.T) {
+	var applied []string
+	var out strings.Builder
+	// tiny is missing too: the fast path must not even look.
+	d := ensureDeps(&applied, false, directorAt("1.0.0"))
+	if err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(applied) != 0 || out.Len() != 0 {
+		t.Errorf("applied=%v out=%q", applied, out.String())
+	}
+}

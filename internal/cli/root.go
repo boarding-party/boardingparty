@@ -4,8 +4,12 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
+	"time"
 
 	"github.com/spf13/cobra"
+	apiextclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -18,6 +22,22 @@ const (
 type globals struct {
 	kubeContext string
 	namespace   string
+}
+
+// ensure installs or upgrades the director on first use. Progress goes to stderr.
+func (g *globals) ensure(ctx context.Context, cfg *rest.Config, ns string) error {
+	d := setupDeps{}
+	var err error
+	if d.kube, err = kubernetes.NewForConfig(cfg); err != nil {
+		return err
+	}
+	if d.ext, err = apiextclient.NewForConfig(cfg); err != nil {
+		return err
+	}
+	if d.apply, err = serverSideApplier(cfg); err != nil {
+		return err
+	}
+	return ensureDirector(ctx, d, setupOpts{ns: ns, tag: wantedTag(), timeout: 3 * time.Minute}, os.Stderr)
 }
 
 // kubeConfig loads the kube credentials and resolves the target namespace.
@@ -41,6 +61,9 @@ func (g *globals) kubeConfig() (*rest.Config, string, error) {
 func (g *globals) connect(ctx context.Context) (*client, func(), error) {
 	cfg, ns, err := g.kubeConfig()
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := g.ensure(ctx, cfg, ns); err != nil {
 		return nil, nil, err
 	}
 	base, stop, err := forward(ctx, cfg, ns, directorSelector, adminPort)

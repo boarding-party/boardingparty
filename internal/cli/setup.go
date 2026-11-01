@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -240,25 +242,11 @@ func runSetup(ctx context.Context, d setupDeps, o setupOpts, out io.Writer) erro
 		fmt.Fprintln(out, "---")
 		return printManifest(out, objs)
 	}
-	for _, obj := range objs {
-		if err := d.apply(ctx, obj); err != nil {
-			return fmt.Errorf("apply %s/%s: %w", obj.GetKind(), obj.GetName(), err)
-		}
-		fmt.Fprintf(out, "✓ %s/%s\n", clean(obj.GetKind()), clean(obj.GetName()))
-	}
 	wctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
-	err = wait.PollUntilContextCancel(wctx, waitPoll, true, func(ctx context.Context) (bool, error) {
-		dep, err := d.kube.AppsV1().Deployments(o.ns).Get(ctx, directorDeploy, metav1.GetOptions{})
-		if err != nil {
-			return false, nil
-		}
-		return deploymentAvailable(dep), nil
-	})
-	if err != nil {
-		return fmt.Errorf("deployment %s not available within %s: %w", directorDeploy, o.timeout, err)
+	if err := installDirector(wctx, d, o, objs, out); err != nil {
+		return err
 	}
-	fmt.Fprintf(out, "✓ deployment/%s available\n", directorDeploy)
 	var verr error
 	err = wait.PollUntilContextCancel(wctx, waitPoll, true, func(ctx context.Context) (bool, error) {
 		verr = d.verify(ctx)
@@ -269,6 +257,94 @@ func runSetup(ctx context.Context, d setupDeps, o setupOpts, out io.Writer) erro
 	}
 	fmt.Fprintf(out, "✓ director ready\n\nNext:\n  boardingparty apply -f project.yaml -n %s\n  boardingparty run \"<persona>\" \"<story>\" --wait -n %s\n", o.ns, o.ns)
 	return nil
+}
+
+// installDirector applies the objects one by one and waits for the Deployment.
+func installDirector(ctx context.Context, d setupDeps, o setupOpts, objs []*unstructured.Unstructured, out io.Writer) error {
+	for _, obj := range objs {
+		if err := d.apply(ctx, obj); err != nil {
+			return fmt.Errorf("apply %s/%s: %w", obj.GetKind(), obj.GetName(), err)
+		}
+		fmt.Fprintf(out, "✓ %s/%s\n", clean(obj.GetKind()), clean(obj.GetName()))
+	}
+	err := wait.PollUntilContextCancel(ctx, waitPoll, true, func(ctx context.Context) (bool, error) {
+		dep, err := d.kube.AppsV1().Deployments(o.ns).Get(ctx, directorDeploy, metav1.GetOptions{})
+		if err != nil {
+			return false, nil
+		}
+		return deploymentAvailable(dep), nil
+	})
+	if err != nil {
+		return fmt.Errorf("deployment %s not available within %s: %w", directorDeploy, o.timeout, err)
+	}
+	fmt.Fprintf(out, "✓ deployment/%s available\n", directorDeploy)
+	return nil
+}
+
+// ensureDirector is what every command that needs the director runs first.
+// Fast path: one Deployment GET; if the director is there at the wanted tag,
+// nothing else happens. Otherwise tiny's prerequisites are checked (read-only,
+// failing with a pointer to `tiny init`), the warnings are printed once, and
+// the director is installed or upgraded in place.
+func ensureDirector(ctx context.Context, d setupDeps, o setupOpts, out io.Writer) error {
+	dep, err := d.kube.AppsV1().Deployments(o.ns).Get(ctx, directorDeploy, metav1.GetOptions{})
+	if err == nil && imageTag(dep) == o.tag {
+		return nil
+	}
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("get deployment %s: %w", directorDeploy, err)
+	}
+	upgrade := err == nil
+	var buf strings.Builder
+	if preflight(ctx, d.kube, d.ext, o.ns, &buf) {
+		var failed []string
+		for _, l := range strings.Split(buf.String(), "\n") {
+			if strings.HasPrefix(l, "✗") {
+				failed = append(failed, l)
+			}
+		}
+		return fmt.Errorf("tiny isn't set up in namespace %s: run `tiny init -n %s` (and `tiny setup` for the agent key)\n%s",
+			o.ns, o.ns, strings.Join(failed, "\n"))
+	}
+	for _, l := range strings.Split(buf.String(), "\n") {
+		if strings.HasPrefix(l, "!") {
+			fmt.Fprintln(out, l)
+		}
+	}
+	objs, err := renderManifest(deploy.Director, o.ns, o.tag)
+	if err != nil {
+		return err
+	}
+	if !upgrade {
+		fmt.Fprintf(out, "installing the director in %s (image tag %s)\n", o.ns, o.tag)
+	} else {
+		fmt.Fprintf(out, "upgrading the director in %s (%s -> %s)\n", o.ns, imageTag(dep), o.tag)
+	}
+	wctx, cancel := context.WithTimeout(ctx, o.timeout)
+	defer cancel()
+	return installDirector(wctx, d, o, objs, out)
+}
+
+// imageTag returns the tag of the director container image, or "".
+func imageTag(dep *appsv1.Deployment) string {
+	for _, c := range dep.Spec.Template.Spec.Containers {
+		if c.Name == "director" {
+			if i := strings.LastIndex(c.Image, ":"); i >= 0 {
+				return c.Image[i+1:]
+			}
+		}
+	}
+	return ""
+}
+
+var releaseSemver = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
+
+// wantedTag is the CLI's own release version without the leading v, else main.
+func wantedTag() string {
+	if bi, ok := debug.ReadBuildInfo(); ok && releaseSemver.MatchString(bi.Main.Version) {
+		return strings.TrimPrefix(bi.Main.Version, "v")
+	}
+	return defaultImageTag
 }
 
 func deploymentAvailable(dep *appsv1.Deployment) bool {
@@ -364,7 +440,7 @@ func newSetup(g *globals) *cobra.Command {
 			return runSetup(cmd.Context(), d, o, cmd.OutOrStdout())
 		},
 	}
-	cmd.Flags().StringVar(&o.tag, "image-tag", defaultImageTag, "director and worker image tag")
+	cmd.Flags().StringVar(&o.tag, "image-tag", wantedTag(), "director and worker image tag")
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "run the checks and print the rendered manifest; apply nothing")
 	cmd.Flags().DurationVar(&o.timeout, "timeout", 3*time.Minute, "how long to wait for the director")
 	return cmd

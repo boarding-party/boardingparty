@@ -159,12 +159,16 @@ demo. [docs/e2e.md](docs/e2e.md) has the full check: install, a successful
 run, a run that gets stuck on purpose, and a watchdog timeout.
 
 First prepare the namespace with `tiny init -n bp-todomvc` and put your key in
-tiny's agent secret. Then `boardingparty setup` checks the cluster, installs
-the director and waits until it answers. Run it again to upgrade in place;
-`--dry-run` prints the manifest and applies nothing.
+tiny's agent secret. That's all you install by hand: the first `boardingparty
+apply` (or any other command) installs the director and waits for it, and a
+newer CLI upgrades it in place. If tiny isn't set up, the command stops and
+tells you to run `tiny init`; it never changes anything tiny owns.
+
+`boardingparty setup -n bp-todomvc` is the same step run on its own, so you can
+review it first: it prints the checks, and `--dry-run` shows the manifest
+without applying anything.
 
 ```
-boardingparty setup -n bp-todomvc
 boardingparty apply -f examples/todomvc.yaml -n bp-todomvc
 boardingparty run "<persona>" "<story>" --wait -n bp-todomvc
 boardingparty runs -n bp-todomvc
