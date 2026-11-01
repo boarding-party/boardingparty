@@ -87,9 +87,9 @@ The agent gets these tools from the director:
 A persona is just rows in the director's database. A pod exists only while a
 run is in progress, so fifty personas cost nothing until one of them acts.
 
-**CLI** (`cmd/boardingparty`). `apply`, `run`, `runs` and `get`. Every
-command opens a short-lived port-forward to the director's admin API and
-closes it when done.
+**CLI** (`cmd/boardingparty`). `board`, `setup`, `apply`, `run`, `runs`, `get`
+and `leave`. Every command opens a port-forward to the director's admin API
+and closes it when done; `board` keeps it open while the UI is in use.
 
 ## Security model
 
@@ -173,39 +173,88 @@ The director's Role is limited to its own namespace: sessions
 
 ## Trying it
 
+Before you start:
+
+1. Run `tiny init -n bp-todomvc` to set up tiny in the namespace.
+2. Put your metered Anthropic key in tiny's agent secret (`tiny-agent-env`).
+
+That's all you install by hand. The CLI installs the director on first use,
+waits for it, and upgrades it in place when you get a newer CLI. If tiny isn't
+set up, it stops and tells you to run `tiny init`; it never changes anything
+tiny owns.
+
+Then open the board:
+
+```
+boardingparty board
+```
+
+In a terminal it asks which kubeconfig context and namespace to use (see
+below), installs the director if needed, and prints a link to a local page on
+127.0.0.1. The link works once and expires after 10 minutes; press Enter for a
+new one. From the page you edit the project, start a run, and watch it finish.
+A finished run shows its recording with the bugs listed beside it, and a bug
+with a time in its step jumps the video to that moment. Ctrl-C stops the board.
+
 `examples/todomvc.yaml` points one persona at Playwright's public TodoMVC
-demo. [docs/e2e.md](docs/e2e.md) has the full check: install, a successful
-run, a run that gets stuck on purpose, and a watchdog timeout.
-
-First prepare the namespace with `tiny init -n bp-todomvc` and put your key in
-tiny's agent secret. That's all you install by hand: the first `boardingparty
-apply` (or any other command) installs the director and waits for it, and a
-newer CLI upgrades it in place. If tiny isn't set up, the command stops and
-tells you to run `tiny init`; it never changes anything tiny owns.
-
-`boardingparty setup` is the same step run on its own, so you can
-review it first: it prints the checks, and `--dry-run` shows the manifest
-without applying anything.
+demo; paste it into the project editor to start. [docs/e2e.md](docs/e2e.md)
+has the full check: a successful run, a run that gets stuck on purpose, and a
+watchdog timeout.
 
 Every command works on one cluster and namespace. Leave out `--context` and
 `-n` in a terminal and the CLI asks: first the kubeconfig context (your
 current one is preselected), then the namespace, with the ones where tiny is
-set up listed first. It remembers your last choice, preselects it next time,
-and prints `target: <context> / <namespace>` on every command so you always
-see where it is acting. Esc cancels without changing anything. In CI, with no
-terminal, it never asks: pass `-n <namespace>` (and `--context` if you don't
-want the current one).
+set up listed first. It remembers your last choice and prints
+`target: <context> / <namespace>` on every command so you can see where it is
+acting. Esc cancels without changing anything. In CI, with no terminal, it
+never asks: pass `-n <namespace>` (and `--context` if you don't want the
+current one).
+
+A run takes a few minutes, mostly pod start-up and the agent's own pace. Cost
+depends on the model and how long the agent works: from a few pence to around
+a pound per run for a short story.
+
+### Scripting and CI
+
+Everything the board does is also a command:
 
 ```
+boardingparty setup -n bp-todomvc              # install the director; --dry-run shows the manifest
 boardingparty apply -f examples/todomvc.yaml -n bp-todomvc
-boardingparty run "<persona>" "<story>" --wait -n bp-todomvc
+boardingparty run "Ada" "todos" --wait -n bp-todomvc
 boardingparty runs -n bp-todomvc
 boardingparty get <run-id> --out ./evidence -n bp-todomvc
 ```
 
-A run takes a few minutes, mostly pod start-up and the agent's own pace.
-Cost depends on the model and how long the agent works: from a few pence to
-around a pound per run for a short story.
+`setup` is the install step on its own, for when you want to review it first.
+`get` downloads the recording and the trace.
+
+### Cleaning up
+
+```
+boardingparty leave -n bp-todomvc
+```
+
+This stops any active run and removes what boardingparty installed: the
+director, its service, role and admin secret, and its data volume. It leaves
+tiny's own objects and the namespace alone. Use `--keep-data` to keep the
+volume (and so your runs and recordings) for a later install. It asks before
+deleting; without a terminal you must pass `--yes`.
+
+## Developing
+
+`go vet ./... && go test -race ./...` runs the tests. To work on the board UI
+without a cluster, run this from the repository root:
+
+```
+go run ./cmd/boardingparty board --dev-director --no-open
+```
+
+It prints `dev director: no cluster, fake runs` and a link. The director is
+in-process, with the todomvc project loaded and the same admin key check as
+the real one. A started run goes to running and, after 20 seconds, finishes
+with a sample recording and one bug at 00:02. The flag is hidden from `--help`
+because it is only for this.
 
 ## Roadmap
 
@@ -242,6 +291,8 @@ internal/store       SQLite
 internal/artifacts   recording storage
 internal/project     project file format
 internal/cli         CLI commands and port-forward
+internal/board       the local UI server, proxy and static UI
+internal/devdirector fake in-process director for `board --dev-director`
 worker/              the run image
 deploy/              Kubernetes manifests
 ```
