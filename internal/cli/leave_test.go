@@ -77,6 +77,16 @@ func newLeaveEnv(t *testing.T, kubeObjs []runtime.Object, sessions ...*agentsv1.
 		e.mu.Unlock()
 		return false, nil, nil
 	})
+	e.kube.PrependReactor("update", "deployments", func(a ktesting.Action) (bool, runtime.Object, error) {
+		e.mu.Lock()
+		e.order = append(e.order, "scale:"+a.(ktesting.UpdateAction).GetObject().(*appsv1.Deployment).Name)
+		e.mu.Unlock()
+		go func() {
+			time.Sleep(5 * time.Millisecond)
+			_ = e.kube.CoreV1().Pods(leaveNS).Delete(context.Background(), "bp-director-pod", metav1.DeleteOptions{})
+		}()
+		return false, nil, nil
+	})
 	sc := runtime.NewScheme()
 	if err := agentsv1.AddToScheme(sc); err != nil {
 		t.Fatal(err)
@@ -151,7 +161,8 @@ var allSix = [][3]string{
 }
 
 func TestLeaveStopsRunsThenRemovesDirector(t *testing.T) {
-	objs := append(directorObjs(true), runPod("bp-run-1"))
+	dpod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "bp-director-pod", Namespace: leaveNS, Labels: map[string]string{"app": "bp-director"}}}
+	objs := append(directorObjs(true), runPod("bp-run-1"), dpod)
 	e := newLeaveEnv(t, objs, runSession("bp-run-1"))
 	var out bytes.Buffer
 	if err := runLeave(context.Background(), e.d, opts(true, false), &out); err != nil {
@@ -166,8 +177,8 @@ func TestLeaveStopsRunsThenRemovesDirector(t *testing.T) {
 	if err := e.ctrl.List(context.Background(), &sl); err != nil || len(sl.Items) != 0 {
 		t.Errorf("sessions left: %v %v", sl.Items, err)
 	}
-	if len(e.log()) == 0 || e.log()[0] != "session:bp-run-1" {
-		t.Fatalf("session not deleted first: %v", e.log())
+	if l := e.log(); len(l) < 3 || l[0] != "scale:bp-director" || l[1] != "kube:pods/bp-director-pod" || l[2] != "session:bp-run-1" {
+		t.Fatalf("want scale, director pod gone, then session: %v", l)
 	}
 	// The run pod must be gone before the first director object is deleted.
 	first := ""

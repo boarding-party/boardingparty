@@ -24,7 +24,7 @@ import (
 const (
 	managedByLabel    = "app.kubernetes.io/managed-by"
 	managedByValue    = "boardingparty"
-	managedSelector   = managedByLabel + "=" + managedByValue
+	managedSelector   = managedByLabel + "=" + managedByValue + ",app.kubernetes.io/name=bp-director"
 	runSessionLabel   = "boardingparty.io/run"
 	sessionPodLabel   = "tinysystems.io/session"
 	runPodPrefix      = "bp-run-"
@@ -249,12 +249,16 @@ func runLeave(ctx context.Context, d leaveDeps, o leaveOpts, out io.Writer) erro
 		if !o.interactive {
 			return errors.New("refusing to delete without confirmation: pass --yes")
 		}
-		if !confirm(o.in, os.Stderr, "Delete these?") {
+		if !confirm(o.in, out, "Delete these?") {
 			fmt.Fprintln(out, "nothing deleted")
 			return nil
 		}
 	}
 
+	deadline := time.Now().Add(o.timeout)
+	if err := stopDirector(ctx, d, o, deadline, out); err != nil {
+		return err
+	}
 	prop := metav1.DeletePropagationForeground
 	for _, name := range sessions {
 		s := &agentsv1.Session{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: o.ns}}
@@ -264,7 +268,7 @@ func runLeave(ctx context.Context, d leaveDeps, o leaveOpts, out io.Writer) erro
 		fmt.Fprintf(out, "deleted session %s\n", clean(name))
 	}
 	if len(sessions) > 0 || pods > 0 {
-		if err := waitRunsGone(ctx, d, o); err != nil {
+		if err := waitRunsGone(ctx, d, o, deadline); err != nil {
 			return err
 		}
 	}
@@ -277,8 +281,46 @@ func runLeave(ctx context.Context, d leaveDeps, o leaveOpts, out io.Writer) erro
 	return nil
 }
 
-func waitRunsGone(ctx context.Context, d leaveDeps, o leaveOpts) error {
-	deadline := time.Now().Add(o.timeout)
+// stopDirector scales the director to zero and waits for its pods to go, so it
+// can't start a new run while leave removes the old ones. A missing
+// Deployment is skipped.
+func stopDirector(ctx context.Context, d leaveDeps, o leaveOpts, deadline time.Time, out io.Writer) error {
+	deps := d.kube.AppsV1().Deployments(o.ns)
+	dep, err := deps.Get(ctx, directorDeploy, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get deployment %s: %w", directorDeploy, err)
+	}
+	zero := int32(0)
+	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 0 {
+		dep.Spec.Replicas = &zero
+		if _, err := deps.Update(ctx, dep, metav1.UpdateOptions{}); err != nil {
+			return fmt.Errorf("scale deployment %s to 0: %w", directorDeploy, err)
+		}
+		fmt.Fprintf(out, "scaled deployment %s to 0\n", directorDeploy)
+	}
+	for {
+		l, err := d.kube.CoreV1().Pods(o.ns).List(ctx, metav1.ListOptions{LabelSelector: directorSelector})
+		if err != nil {
+			return fmt.Errorf("list pods: %w", err)
+		}
+		if len(l.Items) == 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for %d director pod(s) to go", len(l.Items))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(d.poll):
+		}
+	}
+}
+
+func waitRunsGone(ctx context.Context, d leaveDeps, o leaveOpts, deadline time.Time) error {
 	for {
 		s, err := runSessionNames(ctx, d, o.ns)
 		if err != nil {
