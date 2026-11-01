@@ -51,41 +51,78 @@ func (f *stubForwarder) Close() {
 	f.closes++
 }
 
+func (f *stubForwarder) closeCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closes
+}
+
+var linkRE = regexp.MustCompile(`→ (http://127\.0\.0\.1:\d+/\?key=([0-9a-f]{64}))\n`)
+
+// waitFor polls out until it matches re n times.
+func waitFor(t *testing.T, out *syncBuf, n int) [][]string {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if m := linkRE.FindAllStringSubmatch(out.String(), -1); len(m) >= n {
+			return m
+		}
+	}
+	t.Fatalf("wanted %d links, got:\n%s", n, out.String())
+	return nil
+}
+
+func stubBrowser(t *testing.T, err error) <-chan string {
+	t.Helper()
+	ch := make(chan string, 4)
+	old := openBrowser
+	openBrowser = func(u string) error { ch <- u; return err }
+	t.Cleanup(func() { openBrowser = old })
+	return ch
+}
+
 func TestBoardServesUntilCancelled(t *testing.T) {
+	var gotAuth string
+	var mu sync.Mutex
 	dir := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotAuth = r.Header.Get("Authorization")
+		mu.Unlock()
 		io.WriteString(w, `[{"id":"r1"}]`)
 	}))
 	defer dir.Close()
-	var opened []string
-	defer func(f func(string) error) { openBrowser = f }(openBrowser)
-	openBrowser = func(u string) error { opened = append(opened, u); return errors.New("no browser here") }
+	opened := stubBrowser(t, errors.New("no browser here"))
 
 	fw := &stubForwarder{base: dir.URL}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	out := &syncBuf{}
 	done := make(chan error, 1)
-	go func() { done <- runBoard(ctx, fw, boardOpts{}, out) }()
+	go func() { done <- runBoard(ctx, fw, boardOpts{adminToken: "adm"}, out) }()
 
-	re := regexp.MustCompile(`→ (http://127\.0\.0\.1:\d+/\?key=([0-9a-f]{64}))\n`)
-	var m []string
-	for deadline := time.Now().Add(5 * time.Second); m == nil && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		m = re.FindStringSubmatch(out.String())
+	m := waitFor(t, out, 1)[0]
+	select {
+	case u := <-opened:
+		if u != m[1] {
+			t.Errorf("opened %q, printed %q", u, m[1])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("browser not opened")
 	}
-	if m == nil {
-		cancel()
-		t.Fatalf("no URL printed:\n%s", out.String())
-	}
-	if !strings.HasPrefix(out.String(), "✓ director ready\n") {
-		t.Errorf("output = %q", out.String())
+	// The failure note is written right after openBrowser returns.
+	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(out.String(), "couldn't open a browser") && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
 	}
 	if !strings.Contains(out.String(), "couldn't open a browser") {
 		t.Errorf("browser failure not reported gently: %q", out.String())
 	}
-	if len(opened) != 1 || opened[0] != m[1] {
-		t.Errorf("opened = %v", opened)
+	if !strings.HasPrefix(out.String(), "✓ director ready\n") {
+		t.Errorf("output = %q", out.String())
 	}
-	if strings.Count(out.String(), m[2]) != 1 {
-		t.Errorf("token printed more than once")
+	if strings.Contains(out.String(), "press Enter") {
+		t.Errorf("Enter hint without a terminal: %q", out.String())
+	}
+	if strings.Count(out.String(), m[2]) != 1 || strings.Contains(out.String(), "adm") {
+		t.Errorf("secret printed: %q", out.String())
 	}
 
 	jar, _ := cookiejar.New(nil)
@@ -108,13 +145,21 @@ func TestBoardServesUntilCancelled(t *testing.T) {
 	if string(b) != `[{"id":"r1"}]` {
 		t.Errorf("api = %d %q", resp.StatusCode, b)
 	}
-	resp, err = http.Get(base + "/api/runs")
-	if err != nil {
-		t.Fatal(err)
+	mu.Lock()
+	if gotAuth != "Bearer adm" {
+		t.Errorf("director saw Authorization %q", gotAuth)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("no cookie = %d", resp.StatusCode)
+	mu.Unlock()
+	// No cookie: 401. The used link in a second browser: 401 too.
+	for _, u := range []string{base + "/api/runs", m[1]} {
+		resp, err = http.Get(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s without session = %d", u, resp.StatusCode)
+		}
 	}
 
 	cancel()
@@ -126,7 +171,7 @@ func TestBoardServesUntilCancelled(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("runBoard didn't stop")
 	}
-	if fw.closes == 0 {
+	if fw.closeCount() == 0 {
 		t.Errorf("forward not closed")
 	}
 	if _, err := http.Get(base + "/"); err == nil {
@@ -134,20 +179,72 @@ func TestBoardServesUntilCancelled(t *testing.T) {
 	}
 }
 
+func TestBoardEnterGivesANewLink(t *testing.T) {
+	stubBrowser(t, nil)
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := &syncBuf{}
+	done := make(chan error, 1)
+	go func() {
+		done <- runBoard(ctx, &stubForwarder{base: "http://127.0.0.1:1"}, boardOpts{noOpen: true, in: pr}, out)
+	}()
+	first := waitFor(t, out, 1)[0]
+	if !strings.Contains(out.String(), "press Enter for a new link") {
+		t.Errorf("no hint: %q", out.String())
+	}
+	// Using the first link prints nothing new.
+	resp, err := (&http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Get(first[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("first link = %d", resp.StatusCode)
+	}
+	if n := len(linkRE.FindAllString(out.String(), -1)); n != 1 {
+		t.Errorf("links after use = %d", n)
+	}
+	if _, err := pw.Write([]byte("\n")); err != nil {
+		t.Fatal(err)
+	}
+	second := waitFor(t, out, 2)[1]
+	if second[2] == first[2] {
+		t.Fatal("same key twice")
+	}
+	jar, _ := cookiejar.New(nil)
+	resp, err = (&http.Client{Jar: jar}).Get(second[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("second link = %d", resp.StatusCode)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBoardNoOpen(t *testing.T) {
-	defer func(f func(string) error) { openBrowser = f }(openBrowser)
-	openBrowser = func(string) error { t.Error("browser opened with --no-open"); return nil }
+	opened := stubBrowser(t, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	out := &syncBuf{}
 	done := make(chan error, 1)
 	go func() {
 		done <- runBoard(ctx, &stubForwarder{base: "http://127.0.0.1:1"}, boardOpts{noOpen: true}, out)
 	}()
-	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(out.String(), "→ ") && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-	}
+	waitFor(t, out, 1)
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case u := <-opened:
+		t.Errorf("browser opened with --no-open: %s", u)
+	default:
 	}
 }
 

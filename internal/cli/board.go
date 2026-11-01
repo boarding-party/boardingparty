@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -76,24 +77,23 @@ var openBrowser = func(url string) error {
 }
 
 type boardOpts struct {
-	port   int
-	noOpen bool
+	port       int
+	noOpen     bool
+	adminToken string
+	// in, when set (stdin on a terminal), gives a fresh link on each Enter.
+	in io.Reader
 }
 
 // runBoard serves the UI until ctx is done, then shuts the server and the
 // forward down. The director must already be installed.
 func runBoard(ctx context.Context, fw board.Forwarder, o boardOpts, out io.Writer) error {
-	p := board.NewProxy(fw)
+	p := board.NewProxy(fw, o.adminToken)
 	if err := p.Start(ctx); err != nil {
 		return fmt.Errorf("connect to the director: %w", err)
 	}
 	defer p.Close()
 	fmt.Fprintln(out, "✓ director ready")
 
-	token, err := board.NewToken()
-	if err != nil {
-		return err
-	}
 	ui, err := board.UI()
 	if err != nil {
 		return err
@@ -103,21 +103,52 @@ func runBoard(ctx context.Context, fw board.Forwarder, o boardOpts, out io.Write
 		return fmt.Errorf("listen on 127.0.0.1:%d: %w", o.port, err)
 	}
 	port := l.Addr().(*net.TCPAddr).Port
+	h, err := board.NewHandler(board.Config{Port: port, Proxy: p, UI: ui})
+	if err != nil {
+		l.Close()
+		return err
+	}
 	srv := &http.Server{
-		Handler:           board.NewHandler(board.Config{Token: token, Port: port, Proxy: p, UI: ui}),
+		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(l) }()
 
-	// The only place the token is ever printed.
-	url := fmt.Sprintf("http://127.0.0.1:%d/?key=%s", port, token)
+	// The launch key is printed here and nowhere else; it works once.
+	link := func() (string, error) {
+		key, err := h.NewLink()
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("http://127.0.0.1:%d/?key=%s", port, key), nil
+	}
+	url, err := link()
+	if err != nil {
+		srv.Close()
+		return err
+	}
 	fmt.Fprintf(out, "→ %s\n", url)
 	if !o.noOpen {
 		if err := openBrowser(url); err != nil {
 			fmt.Fprintln(out, "couldn't open a browser; open the link above")
 		}
+	}
+	if o.in != nil {
+		fmt.Fprintln(out, "the link works once; press Enter for a new link")
+		go func() {
+			sc := bufio.NewScanner(o.in)
+			for sc.Scan() {
+				if ctx.Err() != nil {
+					return
+				}
+				if u, err := link(); err == nil {
+					fmt.Fprintf(out, "→ %s\n", u)
+				}
+			}
+		}()
 	}
 
 	select {
@@ -142,7 +173,7 @@ func newBoard(g *globals) *cobra.Command {
 		Use:   "board",
 		Short: "Open the boardingparty UI in your browser",
 		Long: "Serves the UI on 127.0.0.1 and connects it to the director. The printed link\n" +
-			"carries a one-off key; anyone without it gets nothing. Ctrl-C stops it.",
+			"carries a single-use key (valid 10 minutes); press Enter for another. Ctrl-C stops it.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
@@ -156,6 +187,12 @@ func newBoard(g *globals) *cobra.Command {
 			}
 			if err := g.ensure(ctx, cfg, ns); err != nil {
 				return err
+			}
+			if o.adminToken, err = g.token(ctx, cfg, ns); err != nil {
+				return err
+			}
+			if isTerminal() {
+				o.in = os.Stdin
 			}
 			return runBoard(ctx, &kubeForwarder{cfg: cfg, ns: ns}, o, cmd.OutOrStdout())
 		},

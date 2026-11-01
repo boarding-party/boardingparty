@@ -116,10 +116,28 @@ talked into doing the wrong thing.
   printing it.
 - Personas use made-up identities. Never give them real accounts or real
   people's details.
+- The admin API wants a bearer key on every request. `setup` (or first use)
+  generates it once into the Secret `bp-director-admin`, and the CLI reads it
+  with your kube credentials. The key is never printed. A port-forward is a
+  plain TCP port on your machine, so the key also stops other local programs
+  and web pages from using the forward. The director also refuses requests
+  with a non-loopback `Host`, with browser `Origin` or `Sec-Fetch-Site`
+  headers, or with form and `text/plain` bodies.
+- `boardingparty board` listens on 127.0.0.1 only. The link it prints holds
+  a key that works once and expires after 10 minutes. Opening it swaps the
+  key for a separate session cookie (HttpOnly, SameSite=Strict). Requests
+  without that cookie get 401, and requests with a `Host` other than
+  `127.0.0.1:<port>` or `localhost:<port>` get 403.
+
+Browsers don't scope cookies by port, so while `board` runs, other local
+servers on 127.0.0.1 (a dev server, say) receive the board session cookie
+with every request your browser sends them. Someone who can read those
+servers' logs could use the board until you stop it. The cookie stops working
+when `board` exits.
 
 Two things this doesn't protect. The model API key sits in the run pod,
-because Claude Code needs it. And anyone who can port-forward into the
-namespace has full admin access.
+because Claude Code needs it. And anyone who can read Secrets and port-forward
+in the namespace has full admin access.
 
 ## What gets installed
 
@@ -132,6 +150,7 @@ All of it in one namespace per project:
 | tiny's egress add-on: default-deny NetworkPolicy, `tiny-egress` proxy, allow-list | the network fence |
 | Secret `tiny-agent-env` with `ANTHROPIC_API_KEY` | the key run pods use |
 | Director: service account, Role, RoleBinding, 5Gi volume, Deployment, ClusterIP Service | `deploy/director.yaml`, installed on first use or by `boardingparty setup` |
+| Secret `bp-director-admin` | the admin API key, created once by setup and never rotated |
 
 There's no Ingress, no public address and no cluster-wide role. tiny's
 `Session` CRD is cluster-wide and is installed once per cluster.
