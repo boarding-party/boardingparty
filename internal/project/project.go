@@ -34,7 +34,7 @@ const (
 	DefaultCPU    = "1"
 	DefaultMemory = "3Gi"
 	minCPU        = "250m"
-	maxCPU        = "4"
+	maxCPU        = "1"
 	minMemory     = "1Gi"
 	maxMemory     = "8Gi"
 )

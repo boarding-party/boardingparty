@@ -165,7 +165,7 @@ and caps a single container at 4 CPU and 8Gi. That covers tiny's sidecar and
 init containers. The quota caps the namespace at 12Gi of memory limits, 8 CPU
 of limits, 4 CPU of requests and 12 pods. The agent container of a run pod is
 sized from the project's `resources` (default `cpu: "1"`, `memory: "3Gi"`;
-CPU between 250m and 4, memory between 1Gi and 8Gi). Memory is also its
+CPU between 250m and 1, memory between 1Gi and 8Gi). Memory is also its
 limit, so a runaway build is killed in its own pod, not the node. A CPU
 request above 1 needs a matching limit in the LimitRange, so edit `bp-defaults`
 if you raise `resources.cpu`.

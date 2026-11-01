@@ -355,11 +355,11 @@ func TestStartSetsResources(t *testing.T) {
 		t.Errorf("default resources = %+v", got)
 	}
 	tn = newTiny()
-	name, err = tn.Start(context.Background(), r, project.Project{Resources: &project.Resources{CPU: "2", Memory: "5Gi"}})
+	name, err = tn.Start(context.Background(), r, project.Project{Resources: &project.Resources{CPU: "500m", Memory: "5Gi"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := getSession(t, tn, name).Spec.Resources; got == nil || got.CPU != "2" || got.Memory != "5Gi" {
+	if got := getSession(t, tn, name).Spec.Resources; got == nil || got.CPU != "500m" || got.Memory != "5Gi" {
 		t.Errorf("override resources = %+v", got)
 	}
 }
