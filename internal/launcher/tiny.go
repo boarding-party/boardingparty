@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,6 +38,27 @@ type Tiny struct {
 	WorkerImage string
 	DirectorURL string // in-namespace, with a .svc name, e.g. http://bp-director.<ns>.svc:8080
 	Model       string
+	// Owner, when set, is put on every Session so that deleting the owner (the
+	// director's Deployment) garbage-collects the run Sessions and their pods.
+	Owner *metav1.OwnerReference
+}
+
+// DirectorDeployment is the name of the director's own Deployment.
+const DirectorDeployment = "bp-director"
+
+// DirectorOwner reads the director's Deployment and returns an owner reference
+// to it. blockOwnerDeletion is false and controller is unset: the reference
+// only drives garbage collection.
+func DirectorOwner(ctx context.Context, r client.Reader, namespace string) (*metav1.OwnerReference, error) {
+	d := &appsv1.Deployment{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: DirectorDeployment}, d); err != nil {
+		return nil, fmt.Errorf("get deployment %s: %w", DirectorDeployment, err)
+	}
+	f := false
+	return &metav1.OwnerReference{
+		APIVersion: "apps/v1", Kind: "Deployment", Name: d.Name, UID: d.UID,
+		BlockOwnerDeletion: &f, Controller: &f,
+	}, nil
 }
 
 // sessionName is bp-run-<first 8 of run ID>; run IDs are lower-case hex.
@@ -72,6 +94,9 @@ func (t *Tiny) Start(ctx context.Context, r store.Run, p project.Project) (strin
 				},
 			},
 		},
+	}
+	if t.Owner != nil {
+		s.OwnerReferences = []metav1.OwnerReference{*t.Owner}
 	}
 	if err := session.Create(ctx, t.Client, s); err != nil {
 		return "", fmt.Errorf("create session %s: %w", name, err)

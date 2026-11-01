@@ -161,13 +161,21 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("kubernetes client: %w", err)
 	}
+	tl := &launcher.Tiny{
+		Client: kc, Namespace: cfg.Namespace, WorkerImage: cfg.WorkerImage,
+		DirectorURL: strings.TrimRight(cfg.DirectorURL, "/"), Model: cfg.Model,
+	}
+	// Run Sessions are owned by this Deployment so removing the director
+	// removes them too. Without the reference runs still work.
+	octx, ocancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if tl.Owner, err = launcher.DirectorOwner(octx, kc, cfg.Namespace); err != nil {
+		log.Printf("warning: run sessions will not be garbage-collected with the director: %v", err)
+	}
+	ocancel()
 	svc := &runs.Service{
 		Store:     st,
 		Artifacts: artifacts.NewFS(filepath.Join(cfg.Data, "artifacts"), cfg.MaxArtifactBytes),
-		Launcher: &launcher.Tiny{
-			Client: kc, Namespace: cfg.Namespace, WorkerImage: cfg.WorkerImage,
-			DirectorURL: strings.TrimRight(cfg.DirectorURL, "/"), Model: cfg.Model,
-		},
+		Launcher:  tl,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)

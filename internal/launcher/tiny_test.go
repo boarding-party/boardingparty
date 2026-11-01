@@ -300,3 +300,46 @@ func TestLivePodsCountsOnlyRunSessionPods(t *testing.T) {
 		t.Errorf("LivePods = %d %v, want 2", n, err)
 	}
 }
+
+func TestStartSetsDirectorOwnerReference(t *testing.T) {
+	tn := newTiny()
+	ctx := context.Background()
+	dir := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: "bp", Name: DirectorDeployment, UID: "dir-uid"}}
+	if err := tn.Client.Create(ctx, dir); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := DirectorOwner(ctx, tn.Client, "bp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tn.Owner = owner
+	name, err := tn.Start(ctx, store.Run{ID: "0123456789abcdef", Token: "t"}, project.Project{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := getSession(t, tn, name).OwnerReferences
+	if len(refs) != 1 {
+		t.Fatalf("ownerReferences = %v", refs)
+	}
+	r := refs[0]
+	if r.Kind != "Deployment" || r.APIVersion != "apps/v1" || r.Name != "bp-director" || r.UID != "dir-uid" {
+		t.Errorf("ref = %+v", r)
+	}
+	if r.BlockOwnerDeletion == nil || *r.BlockOwnerDeletion || (r.Controller != nil && *r.Controller) {
+		t.Errorf("blockOwnerDeletion/controller must be false: %+v", r)
+	}
+}
+
+func TestStartWithoutOwnerStillWorks(t *testing.T) {
+	tn := newTiny()
+	if _, err := DirectorOwner(context.Background(), tn.Client, "bp"); err == nil {
+		t.Fatal("expected an error when the director Deployment is missing")
+	}
+	name, err := tn.Start(context.Background(), store.Run{ID: "0123456789abcdef", Token: "t"}, project.Project{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := getSession(t, tn, name).OwnerReferences; len(refs) != 0 {
+		t.Errorf("ownerReferences = %v", refs)
+	}
+}
