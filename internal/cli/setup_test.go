@@ -119,8 +119,18 @@ func TestRenderManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(objs) != 6 {
+	if len(objs) != 8 {
 		t.Fatalf("objects = %d", len(objs))
+	}
+	// Guard rails go before the Deployment, so a run pod is never admitted without them.
+	idx := map[string]int{}
+	for i, o := range objs {
+		idx[o.GetKind()] = i
+	}
+	for _, k := range []string{"LimitRange", "ResourceQuota"} {
+		if i, ok := idx[k]; !ok || i > idx["Deployment"] {
+			t.Errorf("%s missing or after the Deployment: %v", k, idx)
+		}
 	}
 	var out strings.Builder
 	if err := printManifest(&out, objs); err != nil {
@@ -129,6 +139,12 @@ func TestRenderManifest(t *testing.T) {
 	s := out.String()
 	for _, w := range []string{"ghcr.io/boarding-party/director:v1.2.3", "--worker-image=ghcr.io/boarding-party/worker:v1.2.3", "namespace: bp-x",
 		"name: BP_ADMIN_TOKEN", "name: bp-director-admin"} {
+		if !strings.Contains(s, w) {
+			t.Errorf("rendered YAML missing %q", w)
+		}
+	}
+	for _, w := range []string{"kind: LimitRange", "name: bp-defaults", "kind: ResourceQuota", "name: bp-quota",
+		"limits.memory: 12Gi", `pods: "12"`, "app.kubernetes.io/name: bp-director"} {
 		if !strings.Contains(s, w) {
 			t.Errorf("rendered YAML missing %q", w)
 		}
@@ -199,7 +215,7 @@ func TestSetupApplies(t *testing.T) {
 	if err := runSetup(context.Background(), goodDeps(&applied, nil), setupOpts{ns: testNS, tag: "main", timeout: time.Second}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if len(applied) != 6 || applied[0] != "ServiceAccount/bp-director" {
+	if len(applied) != 8 || applied[0] != "LimitRange/bp-defaults" || applied[1] != "ResourceQuota/bp-quota" {
 		t.Errorf("applied = %v", applied)
 	}
 	for _, w := range []string{"✓ Deployment/bp-director", "✓ director ready", "boardingparty board -n " + testNS} {
@@ -256,7 +272,7 @@ func TestEnsureDirectorMissingInstalls(t *testing.T) {
 	if _, err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if len(applied) != 6 || !strings.Contains(out.String(), "installing the director") || !strings.Contains(out.String(), "! network policies") {
+	if len(applied) != 8 || !strings.Contains(out.String(), "installing the director") || !strings.Contains(out.String(), "! network policies") {
 		t.Errorf("applied=%v out=%s", applied, out.String())
 	}
 }
@@ -280,7 +296,7 @@ func TestEnsureDirectorUpgrade(t *testing.T) {
 	if _, err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "1.0.0", timeout: time.Second}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if len(applied) != 6 || !strings.Contains(out.String(), "upgrading the director in "+testNS+" (0.9.0 -> 1.0.0)") {
+	if len(applied) != 8 || !strings.Contains(out.String(), "upgrading the director in "+testNS+" (0.9.0 -> 1.0.0)") {
 		t.Errorf("applied=%v out=%s", applied, out.String())
 	}
 }
@@ -334,7 +350,7 @@ func TestEnsureDirectorCurrentButAdminSecretMissingReinstalls(t *testing.T) {
 	if !ok || len(want) != 64 || tok != want {
 		t.Errorf("secret %q ok=%v, token %q", want, ok, tok)
 	}
-	if len(applied) != 6 {
+	if len(applied) != 8 {
 		t.Errorf("applied = %v", applied)
 	}
 	if len(order) == 0 || order[len(order)-1] != "verify" {

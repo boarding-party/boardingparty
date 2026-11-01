@@ -179,9 +179,33 @@ func collectObjects(ctx context.Context, d leaveDeps, o leaveOpts) ([]leaveObj, 
 			return d.kube.CoreV1().PersistentVolumeClaims(ns).Delete(ctx, n, metav1.DeleteOptions{})
 		}})
 	}
+	// The namespace guard rails are labelled from their first release, so
+	// there is no unlabelled legacy name to look for.
+	specs = append(specs,
+		spec{"limitrange", "", func() ([]string, error) {
+			l, err := d.kube.CoreV1().LimitRanges(ns).List(ctx, sel)
+			if err != nil {
+				return nil, err
+			}
+			return names(len(l.Items), func(i int) string { return l.Items[i].Name }), nil
+		}, nil, func(ctx context.Context, n string) error {
+			return d.kube.CoreV1().LimitRanges(ns).Delete(ctx, n, metav1.DeleteOptions{})
+		}},
+		spec{"resourcequota", "", func() ([]string, error) {
+			l, err := d.kube.CoreV1().ResourceQuotas(ns).List(ctx, sel)
+			if err != nil {
+				return nil, err
+			}
+			return names(len(l.Items), func(i int) string { return l.Items[i].Name }), nil
+		}, nil, func(ctx context.Context, n string) error {
+			return d.kube.CoreV1().ResourceQuotas(ns).Delete(ctx, n, metav1.DeleteOptions{})
+		}},
+	)
 	for _, s := range specs {
 		var legacy []string
-		if err := s.get(ctx, s.legacy); err == nil {
+		if s.get == nil {
+			// labelled-only kind
+		} else if err := s.get(ctx, s.legacy); err == nil {
 			legacy = []string{s.legacy}
 		} else if !apierrors.IsNotFound(err) {
 			return nil, fmt.Errorf("get %s %s: %w", s.kind, s.legacy, err)
@@ -387,7 +411,8 @@ func newLeave(g *globals) *cobra.Command {
 		Use:   "leave",
 		Short: "Remove everything boardingparty installed",
 		Long: "Stops any active run, waits for its Session and pods to go, then deletes the director\n" +
-			"(Deployment, Service, RoleBinding, Role, ServiceAccount, admin Secret) and its data volume.\n" +
+			"(Deployment, Service, RoleBinding, Role, ServiceAccount, admin Secret, LimitRange,\n" +
+			"ResourceQuota) and its data volume.\n" +
 			"Nothing tiny owns is touched.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {

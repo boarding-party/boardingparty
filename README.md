@@ -153,10 +153,22 @@ All of it in one namespace per project:
 | tiny's egress add-on: default-deny NetworkPolicy, `tiny-egress` proxy, allow-list | the network fence |
 | Secret `tiny-agent-env` with `ANTHROPIC_API_KEY` | the key run pods use |
 | Director: service account, Role, RoleBinding, 5Gi volume, Deployment, ClusterIP Service | `deploy/director.yaml`, installed on first use or by `boardingparty setup` |
+| LimitRange `bp-defaults` and ResourceQuota `bp-quota` | resource limits for the namespace, applied before the Deployment |
 | Secret `bp-director-admin` | the admin API key, created once by setup and never rotated |
 
 There's no Ingress, no public address and no cluster-wide role. tiny's
 `Session` CRD is cluster-wide and is installed once per cluster.
+
+Nothing in the namespace runs unbounded. The LimitRange gives any container
+without limits a default of 1 CPU and 1Gi of memory (requests 100m and 256Mi),
+and caps a single container at 4 CPU and 8Gi. That covers tiny's sidecar and
+init containers. The quota caps the namespace at 12Gi of memory limits, 8 CPU
+of limits, 4 CPU of requests and 12 pods. The agent container of a run pod is
+sized from the project's `resources` (default `cpu: "1"`, `memory: "3Gi"`;
+CPU between 250m and 4, memory between 1Gi and 8Gi). Memory is also its
+limit, so a runaway build is killed in its own pod, not the node. A CPU
+request above 1 needs a matching limit in the LimitRange, so edit `bp-defaults`
+if you raise `resources.cpu`.
 
 The director's Role is limited to its own namespace: sessions
 (get/list/watch/create/delete), persistent volume claims and deployments
@@ -165,6 +177,10 @@ The director's Role is limited to its own namespace: sessions
 
 ## Requirements
 
+- A dedicated node pool for run pods when the cluster also runs production
+  workloads. Limits stop one run starving a node, but a browser and a coding
+  agent are heavy neighbours. Pinning run pods to a pool with a nodeSelector
+  and toleration is future work.
 - Kubernetes with a CNI that enforces NetworkPolicy. Without that, the
   allow-list is only advisory.
 - tiny v0.11.0 or later. Earlier versions lack `spec.mcpServers` and the

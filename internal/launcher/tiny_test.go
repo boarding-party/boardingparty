@@ -343,3 +343,23 @@ func TestStartWithoutOwnerStillWorks(t *testing.T) {
 		t.Errorf("ownerReferences = %v", refs)
 	}
 }
+
+func TestStartSetsResources(t *testing.T) {
+	r := store.Run{ID: "0123456789abcdef0123456789abcdef", Token: "t"}
+	tn := newTiny()
+	name, err := tn.Start(context.Background(), r, project.Project{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := getSession(t, tn, name).Spec.Resources; got == nil || got.CPU != "1" || got.Memory != "3Gi" {
+		t.Errorf("default resources = %+v", got)
+	}
+	tn = newTiny()
+	name, err = tn.Start(context.Background(), r, project.Project{Resources: &project.Resources{CPU: "2", Memory: "5Gi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := getSession(t, tn, name).Spec.Resources; got == nil || got.CPU != "2" || got.Memory != "5Gi" {
+		t.Errorf("override resources = %+v", got)
+	}
+}

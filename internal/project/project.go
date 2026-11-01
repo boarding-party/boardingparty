@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/url"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"sigs.k8s.io/yaml"
 )
 
@@ -16,6 +18,51 @@ type Project struct {
 	ExtraHosts []string `json:"extraHosts"`
 	Model      string   `json:"model"` // optional override
 	Roles      []Role   `json:"roles"`
+	// Resources sizes each run pod's agent container. Optional; see
+	// Project.RunResources for the defaults and bounds.
+	Resources *Resources `json:"resources,omitempty"`
+}
+
+// Resources is the run pod's CPU and memory, as Kubernetes quantities.
+type Resources struct {
+	CPU    string `json:"cpu,omitempty"`
+	Memory string `json:"memory,omitempty"`
+}
+
+// Run pod resource defaults and bounds. A run pod is never unbounded.
+const (
+	DefaultCPU    = "1"
+	DefaultMemory = "3Gi"
+	minCPU        = "250m"
+	maxCPU        = "4"
+	minMemory     = "1Gi"
+	maxMemory     = "8Gi"
+)
+
+// RunResources returns the CPU and memory for a run pod: the project's values,
+// with the defaults filling anything unset.
+func (p Project) RunResources() Resources {
+	r := Resources{CPU: DefaultCPU, Memory: DefaultMemory}
+	if p.Resources != nil {
+		if p.Resources.CPU != "" {
+			r.CPU = p.Resources.CPU
+		}
+		if p.Resources.Memory != "" {
+			r.Memory = p.Resources.Memory
+		}
+	}
+	return r
+}
+
+func checkQuantity(field, v, lo, hi string) error {
+	q, err := resource.ParseQuantity(v)
+	if err != nil {
+		return fmt.Errorf("resources.%s %q is not a valid quantity: %w", field, v, err)
+	}
+	if q.Cmp(resource.MustParse(lo)) < 0 || q.Cmp(resource.MustParse(hi)) > 0 {
+		return fmt.Errorf("resources.%s %q must be between %s and %s", field, v, lo, hi)
+	}
+	return nil
 }
 
 type Role struct {
@@ -74,6 +121,18 @@ func (p Project) validate() error {
 		u, err := url.Parse(s)
 		if err != nil || u.Scheme != "https" || u.Host == "" {
 			return fmt.Errorf("site %q must be an https:// URL", s)
+		}
+	}
+	if r := p.Resources; r != nil {
+		if r.CPU != "" {
+			if err := checkQuantity("cpu", r.CPU, minCPU, maxCPU); err != nil {
+				return err
+			}
+		}
+		if r.Memory != "" {
+			if err := checkQuantity("memory", r.Memory, minMemory, maxMemory); err != nil {
+				return err
+			}
 		}
 	}
 	seen := map[string]bool{}

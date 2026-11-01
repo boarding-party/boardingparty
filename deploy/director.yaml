@@ -1,3 +1,38 @@
+# Guard rails first, so nothing below (or any run pod) lands unbounded.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: bp-defaults
+  labels:
+    app.kubernetes.io/managed-by: boardingparty
+    app.kubernetes.io/name: bp-director
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "1"
+        memory: 1Gi
+      defaultRequest:
+        cpu: 100m
+        memory: 256Mi
+      max:
+        cpu: "4"
+        memory: 8Gi
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: bp-quota
+  labels:
+    app.kubernetes.io/managed-by: boardingparty
+    app.kubernetes.io/name: bp-director
+spec:
+  hard:
+    limits.memory: 12Gi
+    requests.cpu: "4"
+    limits.cpu: "8"
+    pods: "12"
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -108,6 +143,13 @@ spec:
                 secretKeyRef:
                   name: bp-director-admin
                   key: token
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
           ports:
             - name: worker
               containerPort: 8080

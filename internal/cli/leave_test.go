@@ -46,6 +46,8 @@ func directorObjs(labelled bool) []runtime.Object {
 		&corev1.ServiceAccount{ObjectMeta: om("bp-director", labelled)},
 		&corev1.Secret{ObjectMeta: om("bp-director-admin", labelled)},
 		&corev1.PersistentVolumeClaim{ObjectMeta: om("bp-director-data", labelled)},
+		&corev1.LimitRange{ObjectMeta: om("bp-defaults", true)},
+		&corev1.ResourceQuota{ObjectMeta: om("bp-quota", true)},
 	}
 }
 
@@ -150,6 +152,10 @@ func exists(t *testing.T, e *leaveEnv, group, res, name string) bool {
 		_, err = e.kube.CoreV1().ServiceAccounts(leaveNS).Get(ctx, name, metav1.GetOptions{})
 	case "secrets":
 		_, err = e.kube.CoreV1().Secrets(leaveNS).Get(ctx, name, metav1.GetOptions{})
+	case "limitranges":
+		_, err = e.kube.CoreV1().LimitRanges(leaveNS).Get(ctx, name, metav1.GetOptions{})
+	case "resourcequotas":
+		_, err = e.kube.CoreV1().ResourceQuotas(leaveNS).Get(ctx, name, metav1.GetOptions{})
 	case "persistentvolumeclaims":
 		_, err = e.kube.CoreV1().PersistentVolumeClaims(leaveNS).Get(ctx, name, metav1.GetOptions{})
 	}
@@ -164,6 +170,7 @@ var allSix = [][3]string{
 	{"apps", "deployments", "bp-director"}, {"", "services", "bp-director"}, {"rbac", "rolebindings", "bp-director"},
 	{"rbac", "roles", "bp-director"}, {"", "serviceaccounts", "bp-director"}, {"", "secrets", "bp-director-admin"},
 	{"", "persistentvolumeclaims", "bp-director-data"},
+	{"", "limitranges", "bp-defaults"}, {"", "resourcequotas", "bp-quota"},
 }
 
 func TestLeaveStopsRunsThenRemovesDirector(t *testing.T) {
@@ -209,7 +216,7 @@ func TestLeaveStopsRunsThenRemovesDirector(t *testing.T) {
 	if podIdx >= 0 && podIdx > firstIdx {
 		t.Errorf("director deleted before run pod went: %v", e.log())
 	}
-	for _, want := range []string{"session bp-run-1", "deployment bp-director", "secret bp-director-admin", "persistentvolumeclaim bp-director-data"} {
+	for _, want := range []string{"session bp-run-1", "deployment bp-director", "secret bp-director-admin", "persistentvolumeclaim bp-director-data", "limitrange bp-defaults", "resourcequota bp-quota"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}
@@ -350,5 +357,17 @@ func TestLeaveSurvivesMissingSessionCRD(t *testing.T) {
 	}
 	if exists(t, e, "apps", "deployments", "bp-director") {
 		t.Error("director left")
+	}
+}
+
+func TestLeaveLeavesForeignGuardRails(t *testing.T) {
+	e := newLeaveEnv(t, append(directorObjs(true),
+		&corev1.LimitRange{ObjectMeta: om("their-limits", false)},
+		&corev1.ResourceQuota{ObjectMeta: om("their-quota", false)}))
+	if err := runLeave(context.Background(), e.d, opts(true, false), &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(t, e, "", "limitranges", "their-limits") || !exists(t, e, "", "resourcequotas", "their-quota") {
+		t.Error("a foreign LimitRange or ResourceQuota was deleted")
 	}
 }

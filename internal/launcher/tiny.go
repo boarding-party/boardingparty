@@ -78,12 +78,14 @@ func (t *Tiny) Start(ctx context.Context, r store.Run, p project.Project) (strin
 		model = p.Model
 	}
 	name := sessionName(r.ID)
+	res := p.RunResources() // always set: a run pod is never unbounded
 	s := &agentsv1.Session{
 		ObjectMeta: metav1.ObjectMeta{Namespace: t.Namespace, Name: name, Labels: map[string]string{runLabel: r.ID}},
 		Spec: agentsv1.SessionSpec{
-			Task:  Prompt(r),
-			Image: t.WorkerImage,
-			Model: model,
+			Task:      Prompt(r),
+			Image:     t.WorkerImage,
+			Model:     model,
+			Resources: &agentsv1.SessionResources{CPU: res.CPU, Memory: res.Memory},
 			MCPServers: []agentsv1.MCPServer{
 				{Name: "bp", URL: t.DirectorURL + "/mcp/run/" + r.Token},
 				{

@@ -64,3 +64,49 @@ func TestLoadExample(t *testing.T) {
 		t.Fatalf("goal: %q", r.Stories[0].Goal)
 	}
 }
+
+func TestRunResourcesDefaultsAndOverride(t *testing.T) {
+	base := "name: p\nsites: [\"https://x.test\"]\n"
+	p, err := Load([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := p.RunResources(); r.CPU != "1" || r.Memory != "3Gi" {
+		t.Errorf("default = %+v", r)
+	}
+	p, err = Load([]byte(base + "resources: {cpu: 2, memory: 4Gi}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := p.RunResources(); r.CPU != "2" || r.Memory != "4Gi" {
+		t.Errorf("override = %+v", r)
+	}
+	p, err = LoadJSON([]byte(`{"name":"p","sites":["https://x.test"],"resources":{"memory":"2Gi"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := p.RunResources(); r.CPU != "1" || r.Memory != "2Gi" {
+		t.Errorf("partial override = %+v", r)
+	}
+}
+
+func TestResourcesRejected(t *testing.T) {
+	for _, res := range []string{
+		`{"cpu":"100m"}`, `{"cpu":"5"}`, `{"cpu":"lots"}`,
+		`{"memory":"512Mi"}`, `{"memory":"16Gi"}`, `{"memory":"big"}`,
+	} {
+		j := `{"name":"p","sites":["https://x.test"],"resources":` + res + `}`
+		if _, err := LoadJSON([]byte(j)); err == nil {
+			t.Errorf("LoadJSON accepted resources %s", res)
+		}
+		y := "name: p\nsites: [\"https://x.test\"]\nresources: " + res + "\n"
+		if _, err := Load([]byte(y)); err == nil {
+			t.Errorf("Load accepted resources %s", res)
+		}
+	}
+	for _, res := range []string{`{"cpu":"250m","memory":"1Gi"}`, `{"cpu":"4","memory":"8Gi"}`} {
+		if _, err := LoadJSON([]byte(`{"name":"p","sites":["https://x.test"],"resources":` + res + `}`)); err != nil {
+			t.Errorf("rejected boundary %s: %v", res, err)
+		}
+	}
+}
