@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 )
+
+// errLostDirector is what a dropped port-forward looks like to the caller.
+var errLostDirector = errors.New("lost connection to the director (was it removed?)")
 
 // Run mirrors the director's run JSON. Token is always empty: the director redacts it.
 type Run struct {
@@ -63,6 +68,12 @@ func (c *client) do(ctx context.Context, method, path string, body io.Reader, ct
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
+		// The director is reached through a local port-forward, so a transport
+		// failure means the forward died, usually because the pod went away.
+		var ne net.Error
+		if ctx.Err() == nil && !(errors.As(err, &ne) && ne.Timeout()) {
+			return nil, errLostDirector
+		}
 		return nil, err
 	}
 	if resp.StatusCode >= 300 {

@@ -3,7 +3,6 @@ package cli
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -470,15 +469,15 @@ func verifyDirector(cfg *rest.Config, ns string) func(context.Context) error {
 func newSetup(g *globals) *cobra.Command {
 	var o setupOpts
 	cmd := &cobra.Command{
-		Use:   "setup -n <namespace>",
+		Use:   "setup",
 		Short: "Check the cluster and install the director",
 		Long: "Checks that tiny is ready in the namespace, then installs (or upgrades in place)\n" +
 			"the boardingparty director with server-side apply and waits until it answers.\n" +
 			"Prerequisite: `tiny init -n <namespace>` and tiny's agent secret.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if g.namespace == "" {
-				return errors.New("-n/--namespace is required")
+			if err := g.chooseTarget(cmd.Context()); err != nil {
+				return err
 			}
 			o.ns = g.namespace
 			cfg, _, err := g.kubeConfig()

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -78,7 +79,7 @@ func waitRun(ctx context.Context, c *client, id string, every time.Duration) (Ru
 		d, err := c.RunDetail(ctx, id)
 		if err != nil {
 			fails++
-			if fails > maxPollErrors || ctx.Err() != nil {
+			if fails > maxPollErrors || ctx.Err() != nil || errors.Is(err, errLostDirector) {
 				return Run{}, err
 			}
 			fmt.Fprintf(os.Stderr, "poll error (%d/%d): %s\n", fails, maxPollErrors, clean(err.Error()))
