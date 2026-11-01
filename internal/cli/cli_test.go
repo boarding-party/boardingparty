@@ -59,7 +59,7 @@ func artifactServer(t *testing.T, names []string) *httptest.Server {
 func TestGetDownloadsArtifacts(t *testing.T) {
 	srv := artifactServer(t, []string{"shot.png", "trace.zip"})
 	defer srv.Close()
-	c := newClient(srv.URL)
+	c := newClient(srv.URL, "t")
 	d, err := c.RunDetail(context.Background(), "r1")
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +77,7 @@ func TestGetDownloadsArtifacts(t *testing.T) {
 func TestGetRejectsPathSeparators(t *testing.T) {
 	for _, bad := range []string{"../evil", "a/b", `a\b`, ".."} {
 		srv := artifactServer(t, []string{"ok.txt", bad})
-		c := newClient(srv.URL)
+		c := newClient(srv.URL, "t")
 		d, _ := c.RunDetail(context.Background(), "r1")
 		dir := filepath.Join(t.TempDir(), "out")
 		if err := downloadArtifacts(context.Background(), c, d, dir); err == nil {
@@ -111,7 +111,7 @@ func TestRunWaitExitCodes(t *testing.T) {
 		})
 		srv := httptest.NewServer(mux)
 		var out bytes.Buffer
-		err := runAndWait(context.Background(), newClient(srv.URL), &out, "alice", "signup", true, time.Minute)
+		err := runAndWait(context.Background(), newClient(srv.URL, "t"), &out, "alice", "signup", true, time.Minute)
 		srv.Close()
 		code := 0
 		var ee ExitError
@@ -138,7 +138,7 @@ func TestRunWaitTimeout(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	err := runAndWait(context.Background(), newClient(srv.URL), &bytes.Buffer{}, "a", "b", true, 20*time.Millisecond)
+	err := runAndWait(context.Background(), newClient(srv.URL, "t"), &bytes.Buffer{}, "a", "b", true, 20*time.Millisecond)
 	if err == nil || errors.As(err, new(ExitError)) {
 		t.Fatalf("want timeout error, got %v", err)
 	}
@@ -194,7 +194,7 @@ func TestWaitToleratesTransientErrors(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	if err := runAndWait(context.Background(), newClient(srv.URL), &bytes.Buffer{}, "a", "b", true, time.Minute); err != nil {
+	if err := runAndWait(context.Background(), newClient(srv.URL, "t"), &bytes.Buffer{}, "a", "b", true, time.Minute); err != nil {
 		t.Fatalf("want exit 0, got %v", err)
 	}
 }
@@ -206,7 +206,7 @@ func TestWaitGivesUpAfterThreeConsecutiveErrors(t *testing.T) {
 	mux.HandleFunc("GET /api/runs/r1", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "down", 502) })
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	err := runAndWait(context.Background(), newClient(srv.URL), &bytes.Buffer{}, "a", "b", true, time.Minute)
+	err := runAndWait(context.Background(), newClient(srv.URL, "t"), &bytes.Buffer{}, "a", "b", true, time.Minute)
 	if err == nil || errors.As(err, new(ExitError)) {
 		t.Fatalf("want poll error, got %v", err)
 	}
@@ -232,7 +232,7 @@ func runWithPolls(t *testing.T, script []string) error {
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	return runAndWait(context.Background(), newClient(srv.URL), &bytes.Buffer{}, "a", "b", true, time.Minute)
+	return runAndWait(context.Background(), newClient(srv.URL, "t"), &bytes.Buffer{}, "a", "b", true, time.Minute)
 }
 
 func TestPollToleranceBoundary(t *testing.T) {
@@ -255,7 +255,7 @@ func TestErrorTextIsSanitised(t *testing.T) {
 		http.Error(w, "bad \x1b[31mred\u009b2J", http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	_, err := newClient(srv.URL).Runs(context.Background())
+	_, err := newClient(srv.URL, "t").Runs(context.Background())
 	if err == nil {
 		t.Fatal("want error")
 	}

@@ -26,6 +26,24 @@ type globals struct {
 	kubeContext string
 	namespace   string
 	resolved    bool
+	adminToken  string // read once per process
+}
+
+// token reads the director's admin secret with the user's credentials, once.
+func (g *globals) token(ctx context.Context, cfg *rest.Config, ns string) (string, error) {
+	if g.adminToken != "" {
+		return g.adminToken, nil
+	}
+	kc, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return "", err
+	}
+	t, err := readAdminToken(ctx, kc, ns)
+	if err != nil {
+		return "", err
+	}
+	g.adminToken = t
+	return t, nil
 }
 
 // isTerminal reports whether stdin, stdout and stderr (where the picker draws) are terminals; a variable
@@ -123,11 +141,15 @@ func (g *globals) connect(ctx context.Context) (*client, func(), error) {
 	if err := g.ensure(ctx, cfg, ns); err != nil {
 		return nil, nil, err
 	}
+	token, err := g.token(ctx, cfg, ns)
+	if err != nil {
+		return nil, nil, err
+	}
 	base, stop, err := forward(ctx, cfg, ns, directorSelector, adminPort)
 	if err != nil {
 		return nil, nil, err
 	}
-	return newClient(base), stop, nil
+	return newClient(base, token), stop, nil
 }
 
 // NewRoot builds the root command.

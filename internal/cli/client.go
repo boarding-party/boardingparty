@@ -50,12 +50,13 @@ type RunDetail struct {
 
 // client talks to the director admin API.
 type client struct {
-	base string
-	http *http.Client
+	base  string
+	token string // admin API bearer secret
+	http  *http.Client
 }
 
-func newClient(base string) *client {
-	return &client{base: strings.TrimRight(base, "/"), http: &http.Client{Timeout: 5 * time.Minute}}
+func newClient(base, token string) *client {
+	return &client{base: strings.TrimRight(base, "/"), token: token, http: &http.Client{Timeout: 5 * time.Minute}}
 }
 
 func (c *client) do(ctx context.Context, method, path string, body io.Reader, ctype string) (*http.Response, error) {
@@ -66,6 +67,7 @@ func (c *client) do(ctx context.Context, method, path string, body io.Reader, ct
 	if ctype != "" {
 		req.Header.Set("Content-Type", ctype)
 	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		// The director is reached through a local port-forward, so a transport

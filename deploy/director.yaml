@@ -102,6 +102,12 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            # Admin API bearer secret; created by `boardingparty setup` before this Deployment.
+            - name: BP_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bp-director-admin
+                  key: token
           ports:
             - name: worker
               containerPort: 8080

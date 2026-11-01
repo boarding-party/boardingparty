@@ -274,7 +274,7 @@ func TestPickModelEmptyListStartsTyping(t *testing.T) {
 
 func TestLostConnectionMessage(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"state":"running"}`)) }))
-	c := newClient(srv.URL)
+	c := newClient(srv.URL, "t")
 	srv.Close() // the forward is gone
 	start := time.Now()
 	_, err := waitRun(context.Background(), c, "r1", time.Millisecond)

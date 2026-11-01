@@ -127,10 +127,14 @@ func TestRenderManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := out.String()
-	for _, w := range []string{"ghcr.io/boarding-party/director:v1.2.3", "--worker-image=ghcr.io/boarding-party/worker:v1.2.3", "namespace: bp-x"} {
+	for _, w := range []string{"ghcr.io/boarding-party/director:v1.2.3", "--worker-image=ghcr.io/boarding-party/worker:v1.2.3", "namespace: bp-x",
+		"name: BP_ADMIN_TOKEN", "name: bp-director-admin"} {
 		if !strings.Contains(s, w) {
 			t.Errorf("rendered YAML missing %q", w)
 		}
+	}
+	if strings.Contains(s, "kind: Secret") {
+		t.Error("the manifest must not carry the admin Secret (it would rotate on every apply)")
 	}
 	if strings.Contains(s, ":main") {
 		t.Error("untagged :main left behind")

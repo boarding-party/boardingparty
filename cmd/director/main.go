@@ -45,7 +45,11 @@ type config struct {
 	RunTimeout       time.Duration
 	MaxArtifactBytes int64
 	TinyImageTag     string
+	AdminToken       string // from $BP_ADMIN_TOKEN, never a flag (flags show in ps)
 }
+
+// adminTokenEnv carries the admin API bearer secret (Secret bp-director-admin).
+const adminTokenEnv = "BP_ADMIN_TOKEN"
 
 const tinyModule = "github.com/tiny-systems/tiny"
 
@@ -94,7 +98,7 @@ func newScheme() (*runtime.Scheme, error) {
 // served on loopback; the worker one is reachable by worker pods and carries
 // artifact upload, health and the per-run MCP endpoint, nothing from /api/*.
 func newServers(cfg config, svc *runs.Service, st *store.Store) (admin, worker http.Handler) {
-	admin = api.Admin(svc, cfg.MaxArtifactBytes)
+	admin = api.Admin(svc, cfg.MaxArtifactBytes, cfg.AdminToken)
 	mux := http.NewServeMux()
 	mux.Handle("/mcp/run/", mcpserver.Handler(svc, st, cfg.DirectorURL))
 	mux.Handle("/", api.Worker(svc, cfg.MaxArtifactBytes))
@@ -106,6 +110,14 @@ func newServers(cfg config, svc *runs.Service, st *store.Store) (admin, worker h
 // bare service name would be proxied and refused.
 func defaultDirectorURL(namespace string) string {
 	return "http://bp-director." + namespace + ".svc:8080"
+}
+
+// checkConfig refuses to start without what the director can't run safely without.
+func checkConfig(cfg config) error {
+	if cfg.AdminToken == "" {
+		return errors.New(adminTokenEnv + " is empty: the admin API needs its secret (Secret bp-director-admin, key token)")
+	}
+	return nil
 }
 
 func main() {
@@ -129,6 +141,10 @@ func run() error {
 	flag.StringVar(&cfg.TinyImageTag, "tiny-image-tag", "", "tiny agent/sidecar image tag, used only when build info has no tiny version (e.g. 0.11.0)")
 	flag.Parse()
 
+	cfg.AdminToken = os.Getenv(adminTokenEnv)
+	if err := checkConfig(cfg); err != nil {
+		return err
+	}
 	if cfg.Namespace == "" {
 		return errors.New("namespace unknown: set --namespace or POD_NAMESPACE")
 	}

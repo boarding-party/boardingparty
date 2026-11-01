@@ -55,16 +55,25 @@ func setupBoth(t *testing.T, maxBytes int64) (*httptest.Server, *httptest.Server
 	}
 	t.Cleanup(func() { st.Close() })
 	svc := &runs.Service{Store: st, Artifacts: artifacts.NewFS(t.TempDir(), maxBytes), Launcher: noopLauncher{}}
-	srv := httptest.NewServer(Admin(svc, maxBytes))
+	srv := httptest.NewServer(Admin(svc, maxBytes, testToken))
 	t.Cleanup(srv.Close)
 	wsrv := httptest.NewServer(Worker(svc, maxBytes))
 	t.Cleanup(wsrv.Close)
 	return srv, wsrv, svc
 }
 
+const testToken = "admin-secret"
+
+// do sends an authorised request with the content type the CLI would use.
 func do(t *testing.T, method, url, body string) *http.Response {
 	t.Helper()
 	req, _ := http.NewRequest(method, url, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	if method == "POST" && strings.HasSuffix(url, "/api/project") {
+		req.Header.Set("Content-Type", "application/yaml")
+	} else if method == "POST" && strings.HasSuffix(url, "/api/runs") {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -271,6 +280,7 @@ func doJSON(t *testing.T, method, url, body string) *http.Response {
 	t.Helper()
 	req, _ := http.NewRequest(method, url, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("Authorization", "Bearer "+testToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -335,6 +345,7 @@ func TestArtifactRangeAndTypes(t *testing.T) {
 	}
 	req, _ := http.NewRequest("GET", srv.URL+"/api/runs/"+run.ID+"/artifacts/rec.webm", nil)
 	req.Header.Set("Range", "bytes=0-9")
+	req.Header.Set("Authorization", "Bearer "+testToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -368,6 +379,7 @@ func TestProjectPutNeedsJSONContentType(t *testing.T) {
 	srv, _ := setup(t, 0)
 	req, _ := http.NewRequest("PUT", srv.URL+"/api/project", strings.NewReader(fullProject))
 	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("Authorization", "Bearer "+testToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -416,5 +428,141 @@ func TestArtifactHardening(t *testing.T) {
 		if r := do(t, "GET", srv.URL+"/api/runs/"+run.ID+"/artifacts/"+n, ""); r.StatusCode != 404 {
 			t.Fatalf("%s: %d", n, r.StatusCode)
 		}
+	}
+}
+
+// raw sends a request with exactly the given headers.
+func raw(t *testing.T, method, url, body string, h map[string]string) int {
+	t.Helper()
+	req, _ := http.NewRequest(method, url, strings.NewReader(body))
+	for k, v := range h {
+		if k == "Host" {
+			req.Host = v
+			continue
+		}
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+func TestAdminNeedsBearer(t *testing.T) {
+	srv, svc := setup(t, 1024)
+	run := startRun(t, srv, svc)
+	routes := []struct{ method, path, ctype, body string }{
+		{"GET", "/api/project", "", ""},
+		{"PUT", "/api/project", "application/json", fullProject},
+		{"POST", "/api/project", "application/yaml", projYAML},
+		{"GET", "/api/runs", "", ""},
+		{"POST", "/api/runs", "application/json", `{"persona":"ann","story":"checkout"}`},
+		{"GET", "/api/runs/" + run.ID, "", ""},
+		{"GET", "/api/runs/" + run.ID + "/artifacts/a.txt", "", ""},
+		{"GET", "/api/nosuch", "", ""},
+	}
+	for _, auth := range []string{"", "Bearer", "Bearer ", "Bearer wrong", "admin-secret", "Basic admin-secret", "Bearer admin-secret2"} {
+		for _, r := range routes {
+			h := map[string]string{"Content-Type": r.ctype}
+			if auth != "" {
+				h["Authorization"] = auth
+			}
+			if c := raw(t, r.method, srv.URL+r.path, r.body, h); c != 401 {
+				t.Errorf("%s %s with %q = %d, want 401", r.method, r.path, auth, c)
+			}
+		}
+	}
+	if c := raw(t, "GET", srv.URL+"/api/runs", "", map[string]string{"Authorization": "Bearer " + testToken}); c != 200 {
+		t.Errorf("with bearer = %d", c)
+	}
+}
+
+func TestAdminEmptyTokenDeniesAll(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "bp.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := httptest.NewServer(Admin(&runs.Service{Store: st, Artifacts: artifacts.NewFS(t.TempDir(), 0), Launcher: noopLauncher{}}, 0, ""))
+	defer srv.Close()
+	for _, a := range []string{"", "Bearer ", "Bearer"} {
+		if c := raw(t, "GET", srv.URL+"/api/runs", "", map[string]string{"Authorization": a}); c != 401 {
+			t.Errorf("empty token with %q = %d", a, c)
+		}
+	}
+}
+
+func TestAdminHostGuard(t *testing.T) {
+	srv, _ := setup(t, 0)
+	auth := "Bearer " + testToken
+	for _, host := range []string{"evil.example", "evil.example:8081", "10.0.0.1:8081", "[::1]:8081", "127.0.0.1.evil.example:80"} {
+		if c := raw(t, "GET", srv.URL+"/api/runs", "", map[string]string{"Host": host, "Authorization": auth}); c != 403 {
+			t.Errorf("Host %q = %d, want 403", host, c)
+		}
+	}
+	for _, host := range []string{"127.0.0.1:8081", "localhost:1234", "LOCALHOST", "127.0.0.1"} {
+		if c := raw(t, "GET", srv.URL+"/api/runs", "", map[string]string{"Host": host, "Authorization": auth}); c != 200 {
+			t.Errorf("Host %q = %d, want 200", host, c)
+		}
+	}
+}
+
+func TestAdminRejectsBrowserRequests(t *testing.T) {
+	srv, _ := setup(t, 0)
+	auth := "Bearer " + testToken
+	for _, h := range []map[string]string{
+		{"Origin": "http://127.0.0.1:4321"},
+		{"Origin": "null"},
+		{"Sec-Fetch-Site": "cross-site"},
+		{"Sec-Fetch-Site": "same-origin"},
+	} {
+		h["Authorization"] = auth
+		h["Content-Type"] = "application/json"
+		if c := raw(t, "POST", srv.URL+"/api/runs", `{}`, h); c != 403 {
+			t.Errorf("%v = %d, want 403", h, c)
+		}
+	}
+	if c := raw(t, "GET", srv.URL+"/api/runs", "", map[string]string{"Authorization": auth, "Sec-Fetch-Site": "none"}); c != 200 {
+		t.Errorf("Sec-Fetch-Site none = %d", c)
+	}
+}
+
+func TestAdminMutatingContentTypes(t *testing.T) {
+	srv, _ := setup(t, 0)
+	auth := "Bearer " + testToken
+	bad := []string{"", "text/plain", "text/plain; charset=utf-8", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x"}
+	for _, ct := range bad {
+		if c := raw(t, "POST", srv.URL+"/api/project", projYAML, map[string]string{"Authorization": auth, "Content-Type": ct}); c != 415 {
+			t.Errorf("POST project %q = %d, want 415", ct, c)
+		}
+		if c := raw(t, "POST", srv.URL+"/api/runs", `{"persona":"ann","story":"checkout"}`, map[string]string{"Authorization": auth, "Content-Type": ct}); c != 415 {
+			t.Errorf("POST runs %q = %d, want 415", ct, c)
+		}
+		if c := raw(t, "PUT", srv.URL+"/api/project", fullProject, map[string]string{"Authorization": auth, "Content-Type": ct}); c != 415 {
+			t.Errorf("PUT project %q = %d, want 415", ct, c)
+		}
+	}
+	for _, ct := range []string{"application/yaml", "application/x-yaml", "text/yaml; charset=utf-8"} {
+		if c := raw(t, "POST", srv.URL+"/api/project", projYAML, map[string]string{"Authorization": auth, "Content-Type": ct}); c != 204 {
+			t.Errorf("POST project %q = %d, want 204", ct, c)
+		}
+	}
+	if c := raw(t, "POST", srv.URL+"/api/project", projYAML, map[string]string{"Authorization": auth, "Content-Type": "application/json"}); c != 415 {
+		t.Errorf("POST project as json = %d, want 415", c)
+	}
+}
+
+func TestWorkerUnaffectedByAdminGuard(t *testing.T) {
+	srv, w, svc := setupBoth(t, 1024)
+	run := startRun(t, srv, svc)
+	// No bearer, a foreign Host and a browser Origin: the worker surface doesn't care.
+	h := map[string]string{"Host": "bp-director.ns.svc:8080", "Origin": "http://x.test"}
+	if c := raw(t, "PUT", w.URL+"/artifacts/"+run.Token+"/a.png", "x", h); c != 201 {
+		t.Errorf("worker upload = %d", c)
+	}
+	if c := raw(t, "GET", w.URL+"/healthz", "", h); c != 200 {
+		t.Errorf("worker healthz = %d", c)
 	}
 }

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"log"
-	"mime"
 	"net/http"
 	"path"
 	"strings"
@@ -33,8 +32,9 @@ func normalise(maxBytes int64) int64 {
 }
 
 // Admin is the operator API (/api/*). Serve it on a loopback-only listener;
-// workers must never be able to reach it.
-func Admin(svc *runs.Service, maxBytes int64) http.Handler {
+// workers must never be able to reach it. Every request needs
+// "Authorization: Bearer <token>"; an empty token refuses all requests.
+func Admin(svc *runs.Service, maxBytes int64, token string) http.Handler {
 	s := &server{svc: svc, maxBytes: normalise(maxBytes)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/project", s.putProject)
@@ -44,7 +44,7 @@ func Admin(svc *runs.Service, maxBytes int64) http.Handler {
 	mux.HandleFunc("GET /api/runs", s.listRuns)
 	mux.HandleFunc("GET /api/runs/{id}", s.getRun)
 	mux.HandleFunc("GET /api/runs/{id}/artifacts/{name}", s.getArtifact)
-	return mux
+	return guardAdmin(token, mux)
 }
 
 // Worker is the surface reachable by worker pods: artifact upload and health only.
@@ -79,6 +79,10 @@ func fail(w http.ResponseWriter, err error) {
 }
 
 func (s *server) putProject(w http.ResponseWriter, r *http.Request) {
+	if !mediaTypeIs(r, yamlTypes) {
+		http.Error(w, "content type must be application/yaml", http.StatusUnsupportedMediaType)
+		return
+	}
 	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		http.Error(w, "unreadable body", http.StatusBadRequest)
@@ -97,7 +101,7 @@ func (s *server) putProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) putProjectJSON(w http.ResponseWriter, r *http.Request) {
-	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
+	if !mediaTypeIs(r, jsonType) {
 		http.Error(w, "content type must be application/json", http.StatusUnsupportedMediaType)
 		return
 	}
@@ -135,6 +139,10 @@ func (s *server) startRun(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Persona string `json:"persona"`
 		Story   string `json:"story"`
+	}
+	if !mediaTypeIs(r, jsonType) {
+		http.Error(w, "content type must be application/json", http.StatusUnsupportedMediaType)
+		return
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)

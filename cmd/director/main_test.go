@@ -34,6 +34,15 @@ func (fakeLauncher) LivePods(context.Context) (int, error)               { retur
 func do(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	// What the CLI sends through the port-forward; the worker ignores it.
+	req.Host = "127.0.0.1:8081"
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	switch {
+	case method == "POST" && path == "/api/project":
+		req.Header.Set("Content-Type", "application/yaml")
+	case method == "POST":
+		req.Header.Set("Content-Type", "application/json")
+	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
@@ -45,7 +54,7 @@ func TestServerRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	cfg := config{DirectorURL: "http://bp-director:8080", MaxArtifactBytes: 1 << 20}
+	cfg := config{DirectorURL: "http://bp-director:8080", MaxArtifactBytes: 1 << 20, AdminToken: "admin-secret"}
 	svc := &runs.Service{Store: st, Artifacts: artifacts.NewFS(t.TempDir(), cfg.MaxArtifactBytes), Launcher: fakeLauncher{}}
 	admin, worker := newServers(cfg, svc, st)
 
@@ -78,6 +87,33 @@ func TestServerRoutes(t *testing.T) {
 	body := `{"persona":"` + p.Roles[0].Personas[0].Name + `","story":"` + p.Roles[0].Stories[0].Name + `"}`
 	if rec := do(t, admin, "POST", "/api/runs", body); rec.Code != 201 {
 		t.Fatalf("admin POST /api/runs = %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestAdminNeedsTheSecret(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "bp.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := config{DirectorURL: "http://bp-director:8080", MaxArtifactBytes: 1 << 20, AdminToken: "admin-secret"}
+	svc := &runs.Service{Store: st, Artifacts: artifacts.NewFS(t.TempDir(), cfg.MaxArtifactBytes), Launcher: fakeLauncher{}}
+	admin, _ := newServers(cfg, svc, st)
+	req := httptest.NewRequest("GET", "/api/runs", nil)
+	req.Host = "127.0.0.1:8081"
+	rec := httptest.NewRecorder()
+	admin.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("admin without bearer = %d", rec.Code)
+	}
+}
+
+func TestRefusesToStartWithoutAdminToken(t *testing.T) {
+	if err := checkConfig(config{}); err == nil || !strings.Contains(err.Error(), adminTokenEnv) {
+		t.Fatalf("checkConfig = %v", err)
+	}
+	if err := checkConfig(config{AdminToken: "x"}); err != nil {
+		t.Fatal(err)
 	}
 }
 

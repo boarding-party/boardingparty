@@ -151,6 +151,18 @@ func collectObjects(ctx context.Context, d leaveDeps, o leaveOpts) ([]leaveObj, 
 		}, func(ctx context.Context, n string) error {
 			return d.kube.CoreV1().ServiceAccounts(ns).Delete(ctx, n, metav1.DeleteOptions{})
 		}},
+		{"secret", adminSecret, func() ([]string, error) {
+			l, err := d.kube.CoreV1().Secrets(ns).List(ctx, sel)
+			if err != nil {
+				return nil, err
+			}
+			return names(len(l.Items), func(i int) string { return l.Items[i].Name }), nil
+		}, func(ctx context.Context, n string) error {
+			_, err := d.kube.CoreV1().Secrets(ns).Get(ctx, n, metav1.GetOptions{})
+			return err
+		}, func(ctx context.Context, n string) error {
+			return d.kube.CoreV1().Secrets(ns).Delete(ctx, n, metav1.DeleteOptions{})
+		}},
 	}
 	if !o.keepData {
 		specs = append(specs, spec{"persistentvolumeclaim", directorDataClaim, func() ([]string, error) {
@@ -350,7 +362,7 @@ func newLeave(g *globals) *cobra.Command {
 		Use:   "leave",
 		Short: "Remove everything boardingparty installed",
 		Long: "Stops any active run, waits for its Session and pods to go, then deletes the director\n" +
-			"(Deployment, Service, RoleBinding, Role, ServiceAccount) and its data volume.\n" +
+			"(Deployment, Service, RoleBinding, Role, ServiceAccount, admin Secret) and its data volume.\n" +
 			"Nothing tiny owns is touched.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {

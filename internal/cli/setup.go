@@ -280,6 +280,14 @@ func runSetup(ctx context.Context, d setupDeps, o setupOpts, out io.Writer) erro
 
 // installDirector applies the objects one by one and waits for the rollout.
 func installDirector(ctx context.Context, d setupDeps, o setupOpts, objs []*unstructured.Unstructured, out io.Writer) error {
+	// The Deployment reads the admin secret, so it has to exist first.
+	created, err := ensureAdminSecret(ctx, d.kube, o.ns)
+	if err != nil {
+		return err
+	}
+	if created {
+		fmt.Fprintf(out, "✓ Secret/%s (admin key, created)\n", adminSecret)
+	}
 	for _, obj := range objs {
 		if err := d.apply(ctx, obj); err != nil {
 			if apierrors.IsConflict(err) && !o.force {
@@ -290,7 +298,7 @@ func installDirector(ctx context.Context, d setupDeps, o setupOpts, objs []*unst
 		fmt.Fprintf(out, "✓ %s/%s\n", clean(obj.GetKind()), clean(obj.GetName()))
 	}
 	var lastErr error
-	err := wait.PollUntilContextCancel(ctx, waitPoll, true, func(ctx context.Context) (bool, error) {
+	err = wait.PollUntilContextCancel(ctx, waitPoll, true, func(ctx context.Context) (bool, error) {
 		dep, err := d.kube.AppsV1().Deployments(o.ns).Get(ctx, directorDeploy, metav1.GetOptions{})
 		if err != nil {
 			lastErr = err
@@ -445,6 +453,14 @@ func serverSideApplier(cfg *rest.Config, force bool) (func(context.Context, *uns
 // verifyDirector port-forwards to the director and expects GET /api/runs = 200.
 func verifyDirector(cfg *rest.Config, ns string) func(context.Context) error {
 	return func(ctx context.Context) error {
+		kube, err := kubernetes.NewForConfig(cfg)
+		if err != nil {
+			return err
+		}
+		token, err := readAdminToken(ctx, kube, ns)
+		if err != nil {
+			return err
+		}
 		base, stop, err := forward(ctx, cfg, ns, directorSelector, adminPort)
 		if err != nil {
 			return err
@@ -454,6 +470,7 @@ func verifyDirector(cfg *rest.Config, ns string) func(context.Context) error {
 		if err != nil {
 			return err
 		}
+		req.Header.Set("Authorization", "Bearer "+token)
 		resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 		if err != nil {
 			return err

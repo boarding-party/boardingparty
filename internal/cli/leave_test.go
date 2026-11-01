@@ -42,6 +42,7 @@ func directorObjs(labelled bool) []runtime.Object {
 		&rbacv1.RoleBinding{ObjectMeta: om("bp-director", labelled)},
 		&rbacv1.Role{ObjectMeta: om("bp-director", labelled)},
 		&corev1.ServiceAccount{ObjectMeta: om("bp-director", labelled)},
+		&corev1.Secret{ObjectMeta: om("bp-director-admin", labelled)},
 		&corev1.PersistentVolumeClaim{ObjectMeta: om("bp-director-data", labelled)},
 	}
 }
@@ -145,6 +146,8 @@ func exists(t *testing.T, e *leaveEnv, group, res, name string) bool {
 		_, err = e.kube.RbacV1().Roles(leaveNS).Get(ctx, name, metav1.GetOptions{})
 	case "serviceaccounts":
 		_, err = e.kube.CoreV1().ServiceAccounts(leaveNS).Get(ctx, name, metav1.GetOptions{})
+	case "secrets":
+		_, err = e.kube.CoreV1().Secrets(leaveNS).Get(ctx, name, metav1.GetOptions{})
 	case "persistentvolumeclaims":
 		_, err = e.kube.CoreV1().PersistentVolumeClaims(leaveNS).Get(ctx, name, metav1.GetOptions{})
 	}
@@ -157,7 +160,8 @@ func exists(t *testing.T, e *leaveEnv, group, res, name string) bool {
 
 var allSix = [][3]string{
 	{"apps", "deployments", "bp-director"}, {"", "services", "bp-director"}, {"rbac", "rolebindings", "bp-director"},
-	{"rbac", "roles", "bp-director"}, {"", "serviceaccounts", "bp-director"}, {"", "persistentvolumeclaims", "bp-director-data"},
+	{"rbac", "roles", "bp-director"}, {"", "serviceaccounts", "bp-director"}, {"", "secrets", "bp-director-admin"},
+	{"", "persistentvolumeclaims", "bp-director-data"},
 }
 
 func TestLeaveStopsRunsThenRemovesDirector(t *testing.T) {
@@ -203,7 +207,7 @@ func TestLeaveStopsRunsThenRemovesDirector(t *testing.T) {
 	if podIdx >= 0 && podIdx > firstIdx {
 		t.Errorf("director deleted before run pod went: %v", e.log())
 	}
-	for _, want := range []string{"session bp-run-1", "deployment bp-director", "persistentvolumeclaim bp-director-data"} {
+	for _, want := range []string{"session bp-run-1", "deployment bp-director", "secret bp-director-admin", "persistentvolumeclaim bp-director-data"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}
@@ -237,9 +241,13 @@ func TestLeaveLegacyUnlabelled(t *testing.T) {
 
 func TestLeaveLeavesForeignObjects(t *testing.T) {
 	other := &corev1.ServiceAccount{ObjectMeta: om("tiny-session", false)}
-	e := newLeaveEnv(t, append(directorObjs(true), other))
+	agentKey := &corev1.Secret{ObjectMeta: om("tiny-agent-env", false)}
+	e := newLeaveEnv(t, append(directorObjs(true), other, agentKey))
 	if err := runLeave(context.Background(), e.d, opts(true, false), &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
+	}
+	if !exists(t, e, "", "secrets", "tiny-agent-env") {
+		t.Error("tiny's agent secret was deleted")
 	}
 	if !exists(t, e, "", "serviceaccounts", "tiny-session") {
 		t.Error("tiny's service account was deleted")
