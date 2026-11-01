@@ -5,7 +5,7 @@
 // Never use innerHTML or dangerouslySetInnerHTML here.
 import { render } from './vendor/preact.module.js';
 import { useState, useEffect, useRef, useCallback } from './vendor/hooks.module.js';
-import { html, api, directorDown } from './lib.js';
+import { html, api, directorDown, confirmDialog, DialogHost } from './lib.js';
 import { ProjectPage } from './project.js';
 
 const ACTIVE = new Set(['pending', 'running']);
@@ -97,10 +97,33 @@ function parseRoute(hash) {
   return { page: 'runs' };
 }
 
-function useRoute() {
+// useRoute follows the hash. While leaveGuard.current is true (unsaved
+// project edits), leaving #/project asks first; on "Stay" the address goes
+// back to where it was without another hashchange.
+function useRoute(leaveGuard) {
   const [route, setRoute] = useState(() => parseRoute(location.hash));
   useEffect(() => {
-    const on = () => { setRoute(parseRoute(location.hash)); window.scrollTo(0, 0); };
+    let shown = location.hash;
+    let current = parseRoute(shown);
+    const go = () => {
+      shown = location.hash;
+      current = parseRoute(shown);
+      setRoute(current);
+      window.scrollTo(0, 0);
+    };
+    const on = async () => {
+      const next = parseRoute(location.hash);
+      if (current.page === 'project' && next.page !== 'project' && leaveGuard.current) {
+        const target = location.hash;
+        history.replaceState(null, '', shown || '#/project');
+        const leave = await confirmDialog('You have unsaved changes to the project. Leave and lose them?',
+          { confirm: 'Leave without saving', cancel: 'Stay', danger: true });
+        if (!leave) return;
+        leaveGuard.current = false;
+        history.replaceState(null, '', target);
+      }
+      go();
+    };
     window.addEventListener('hashchange', on);
     return () => window.removeEventListener('hashchange', on);
   }, []);
@@ -127,7 +150,9 @@ function usePoll(fn, deps) {
 // ---- shell --------------------------------------------------------------
 
 function App() {
-  const route = useRoute();
+  const unsaved = useRef(false); // the project editor has unsaved edits
+  const route = useRoute(unsaved);
+  const onDirty = useCallback((v) => { unsaved.current = v; }, []);
   const [project, setProject] = useState(undefined); // undefined loading, null none
   const [projectErr, setProjectErr] = useState('');
   const [runs, setRuns] = useState(null);
@@ -174,10 +199,11 @@ function App() {
       <main>
         <${RunStrip} director=${director} active=${active} />
         ${route.page === 'run' ? html`<${RunPage} key=${route.id} id=${route.id} onChange=${loadRuns} />`
-          : route.page === 'project' ? html`<${ProjectPage} onSaved=${loadProject} />`
+          : route.page === 'project' ? html`<${ProjectPage} onSaved=${loadProject} onDirty=${onDirty} />`
           : html`<${RunsPage} project=${project} projectErr=${projectErr} runs=${runs} runsErr=${runsErr}
                     active=${active} onStarted=${loadRuns} />`}
       </main>
+      <${DialogHost} />
     </div>`;
 }
 

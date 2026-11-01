@@ -4,7 +4,7 @@
 // Field names must match internal/project/project.go exactly: the director
 // rejects unknown fields.
 import { useState, useEffect, useRef } from './vendor/hooks.module.js';
-import { html, api } from './lib.js';
+import { html, api, confirmDialog } from './lib.js';
 
 // ---- model --------------------------------------------------------------
 // The draft carries a stable id on every repeatable row so inputs keep focus
@@ -42,6 +42,23 @@ function fromProject(p) {
   };
 }
 
+const personaHasContent = (p) => !!(p.name.trim() || p.traits.length || p.identity.some((x) => x.k.trim() || x.v.trim()));
+const storyHasContent = (s) => !!(s.name.trim() || s.goal.trim());
+
+// identityWarnings returns a message per identity row that won't save as
+// typed: a value without a name is dropped, and a repeated name keeps only
+// the last value.
+function identityWarnings(rows) {
+  const last = new Map();
+  rows.forEach((x, i) => { const k = x.k.trim(); if (k) last.set(k, i); });
+  return rows.map((x, i) => {
+    const k = x.k.trim();
+    if (!k) return x.v.trim() ? 'This field needs a name, or it won\'t be saved.' : '';
+    if (last.get(k) !== i) return `"${k}" appears again below; only the last one is saved.`;
+    return '';
+  });
+}
+
 const vals = (rows) => rows.map((x) => x.v.trim()).filter(Boolean);
 
 function toJSON(d) {
@@ -64,6 +81,10 @@ function toJSON(d) {
   };
 }
 
+// A staging-ish word as a whole label or dash-separated part of one:
+// staging.shop.com, shop-dev.example.co, qa.app.io. Not "devices.com".
+const STAGING_LABEL = /(^|[.-])(staging|stage|test|dev|uat|qa|preview)([.-]|$)/;
+
 // siteWarning flags sites that may not be staging. It never blocks a save;
 // the director still enforces https://.
 function siteWarning(s) {
@@ -73,7 +94,9 @@ function siteWarning(s) {
   try { u = new URL(s); } catch (_) { return 'This is not a full URL. Make sure this is a staging site.'; }
   if (u.protocol !== 'https:') return 'This is not https://. Make sure this is a staging site.';
   const host = u.hostname.toLowerCase();
-  if (host.startsWith('www.') || !/(staging|test|dev)/.test(host)) {
+  const labels = host.split('.');
+  const noTLD = labels.length > 1 ? labels.slice(0, -1).join('.') : host;
+  if (host.startsWith('www.') || !STAGING_LABEL.test(noTLD)) {
     return 'This looks like a production address. Make sure this is a staging site.';
   }
   return '';
@@ -81,7 +104,7 @@ function siteWarning(s) {
 
 // ---- page ---------------------------------------------------------------
 
-export function ProjectPage({ onSaved }) {
+export function ProjectPage({ onSaved, onDirty }) {
   const [state, setState] = useState('loading'); // loading | ready | error
   const [loadErr, setLoadErr] = useState('');
   const [isNew, setIsNew] = useState(false);
@@ -112,7 +135,10 @@ export function ProjectPage({ onSaved }) {
 
   useEffect(() => { load(); }, []);
 
-  const dirty = draft && JSON.stringify(toJSON(draft)) !== baseline;
+  const dirty = !!draft && JSON.stringify(toJSON(draft)) !== baseline;
+
+  useEffect(() => { onDirty(dirty); }, [dirty]);
+  useEffect(() => () => onDirty(false), []);
 
   useEffect(() => {
     if (!dirty) return undefined;
@@ -131,7 +157,8 @@ export function ProjectPage({ onSaved }) {
   const edit = (fn) => setDraft((d) => { const c = structuredClone(d); fn(c); return c; });
 
   const save = async (e) => {
-    e.preventDefault();
+    if (e) e.preventDefault();
+    if (saving) return;
     setSaving(true); setSaveErr('');
     try {
       await api('/api/project', {
@@ -151,6 +178,21 @@ export function ProjectPage({ onSaved }) {
     }
   };
 
+  // Cmd-S / Ctrl-S saves. Enter in a single-line field never does: it would
+  // PUT the whole project on a stray keypress.
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  useEffect(() => {
+    const key = (e) => {
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 's') { e.preventDefault(); saveRef.current(); }
+    };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, []);
+  const noEnterSubmit = (e) => {
+    if (e.key === 'Enter' && e.target instanceof HTMLInputElement) e.preventDefault();
+  };
+
   const imported = async () => {
     setImportOpen(false);
     setSaveErr('');
@@ -167,7 +209,7 @@ export function ProjectPage({ onSaved }) {
   }
 
   return html`
-    <form class="page editor" onSubmit=${save} ref=${top}>
+    <form class="page editor" onSubmit=${save} onKeyDown=${noEnterSubmit} ref=${top}>
       <div class="row between head">
         <div>
           <h1>${isNew ? 'Set up your project' : 'Project'}</h1>
@@ -209,10 +251,10 @@ export function ProjectPage({ onSaved }) {
 
         ${draft.roles.map((r, i) => html`<${RoleCard} key=${r.id} role=${r} n=${i + 1}
             onChange=${(fn) => edit((d) => fn(d.roles[i]))}
-            onRemove=${() => {
-              const busy = r.personas.some((p) => p.name.trim()) || r.stories.some((s) => s.name.trim() || s.goal.trim());
-              if (busy && !window.confirm(`Remove the role ${r.name.trim() || 'without a name'} with its personas and stories?`)) return;
-              edit((d) => { d.roles.splice(i, 1); });
+            onRemove=${async () => {
+              const busy = r.name.trim() || r.description.trim() || r.personas.some(personaHasContent) || r.stories.some(storyHasContent);
+              if (busy && !(await confirmDialog(`Remove the role ${r.name.trim() ? `"${r.name.trim()}"` : 'without a name'} with its personas and stories?`, { confirm: 'Remove role', danger: true }))) return;
+              edit((d) => { d.roles.splice(d.roles.findIndex((x) => x.id === r.id), 1); });
             }} />`)}
 
         ${draft.roles.length ? null : html`<div class="empty"><b>No roles yet</b>A role is a kind of user, such as a customer or an admin. Each has personas and stories.</div>`}
@@ -239,7 +281,18 @@ function ListField({ label, hint, rows, placeholder, addLabel, warn, onChange })
           return html`<div key=${x.id}>
             <div class="row nowrap">
               <input value=${x.v} placeholder=${placeholder} aria-label=${label + ' ' + (i + 1)}
-                onInput=${(e) => { const v = e.currentTarget.value; onChange((l) => { l[i].v = v; }); }} />
+                onInput=${(e) => { const v = e.currentTarget.value; onChange((l) => { l[i].v = v; }); }}
+                onKeyDown=${(e) => {
+                  if (e.key !== 'Enter') return;
+                  e.preventDefault();
+                  // Enter moves to the next row, adding one after a filled last row.
+                  const list = e.currentTarget.closest('.list');
+                  if (i === rows.length - 1) {
+                    if (!e.currentTarget.value.trim()) return;
+                    onChange((l) => { l.push(row()); });
+                  }
+                  setTimeout(() => { const n = list && list.querySelectorAll('input')[i + 1]; if (n) n.focus(); }, 0);
+                }} />
               <button class="btn icon" type="button" title="Remove" aria-label=${'Remove ' + (x.v || 'row')}
                 onClick=${() => onChange((l) => { l.splice(i, 1); })}>×</button>
             </div>
@@ -280,7 +333,10 @@ function RoleCard({ role, n, onChange, onRemove }) {
           ${role.personas.length ? null : html`<p class="small muted">No personas. Runs need at least one.</p>`}
           ${role.personas.map((p, i) => html`<${PersonaRow} key=${p.id} persona=${p}
               onChange=${(fn) => onChange((r) => fn(r.personas[i]))}
-              onRemove=${() => onChange((r) => { r.personas.splice(i, 1); })} />`)}
+              onRemove=${async () => {
+                if (personaHasContent(p) && !(await confirmDialog(`Remove the persona ${p.name.trim() ? `"${p.name.trim()}"` : 'without a name'}?`, { confirm: 'Remove persona', danger: true }))) return;
+                onChange((r) => { r.personas.splice(r.personas.findIndex((x) => x.id === p.id), 1); });
+              }} />`)}
           <button class="btn ghost" type="button" onClick=${() => onChange((r) => { r.personas.push(newPersona()); })}>Add persona</button>
         </div>
         <div>
@@ -288,7 +344,10 @@ function RoleCard({ role, n, onChange, onRemove }) {
           ${role.stories.length ? null : html`<p class="small muted">No stories. Runs need at least one.</p>`}
           ${role.stories.map((s, i) => html`<${StoryRow} key=${s.id} story=${s}
               onChange=${(fn) => onChange((r) => fn(r.stories[i]))}
-              onRemove=${() => onChange((r) => { r.stories.splice(i, 1); })} />`)}
+              onRemove=${async () => {
+                if (storyHasContent(s) && !(await confirmDialog(`Remove the story ${s.name.trim() ? `"${s.name.trim()}"` : 'without a name'}?`, { confirm: 'Remove story', danger: true }))) return;
+                onChange((r) => { r.stories.splice(r.stories.findIndex((x) => x.id === s.id), 1); });
+              }} />`)}
           <button class="btn ghost" type="button" onClick=${() => onChange((r) => { r.stories.push(newStory()); })}>Add story</button>
         </div>
       </div>
@@ -297,6 +356,7 @@ function RoleCard({ role, n, onChange, onRemove }) {
 
 function PersonaRow({ persona, onChange, onRemove }) {
   const id = `p-${persona.id}`;
+  const warns = identityWarnings(persona.identity);
   return html`
     <div class="sub">
       <div class="row nowrap">
@@ -309,14 +369,14 @@ function PersonaRow({ persona, onChange, onRemove }) {
         onChange=${(fn) => onChange((p) => fn(p.traits))} />
       <div class="kv">
         <span class="sublabel">Identity</span>
-        ${persona.identity.map((x, i) => html`<div class="row nowrap" key=${x.id}>
+        ${persona.identity.map((x, i) => html`<div key=${x.id}><div class="row nowrap">
           <input class="k" value=${x.k} placeholder="email" aria-label="Identity field"
             onInput=${(e) => { const v = e.currentTarget.value; onChange((p) => { p.identity[i].k = v; }); }} />
           <input value=${x.v} placeholder="value" aria-label=${'Value for ' + (x.k || 'field')}
             onInput=${(e) => { const v = e.currentTarget.value; onChange((p) => { p.identity[i].v = v; }); }} />
           <button class="btn icon" type="button" title="Remove field" aria-label=${'Remove ' + (x.k || 'field')}
             onClick=${() => onChange((p) => { p.identity.splice(i, 1); })}>×</button>
-        </div>`)}
+        </div>${warns[i] ? html`<div class="warn">${warns[i]}</div>` : null}</div>`)}
         <div><button class="btn ghost small" type="button" onClick=${() => onChange((p) => { p.identity.push({ id: nid(), k: '', v: '' }); })}>Add identity field</button></div>
       </div>
     </div>`;
@@ -342,20 +402,34 @@ function Tags({ tags, label, placeholder, onChange }) {
   const [text, setText] = useState('');
   // add reads the input itself: a key can arrive before the render that
   // would have updated text.
+  const addAll = (parts) => {
+    const fresh = [...new Set(parts.map((t) => t.trim()).filter(Boolean))].filter((t) => !tags.includes(t));
+    if (fresh.length) onChange((l) => { for (const t of fresh) if (!l.includes(t)) l.push(t); });
+  };
   const add = (e) => {
-    const t = e.currentTarget.value.trim().replace(/,$/, '').trim();
-    if (t && !tags.includes(t)) onChange((l) => { l.push(t); });
+    addAll(e.currentTarget.value.split(','));
     e.currentTarget.value = '';
     setText('');
   };
+  // A pasted or typed "a, b, c" becomes tags; the part after the last comma
+  // stays in the input.
+  const input = (e) => {
+    const v = e.currentTarget.value;
+    if (!v.includes(',')) { setText(v); return; }
+    const parts = v.split(',');
+    const rest = parts.pop();
+    addAll(parts);
+    e.currentTarget.value = rest;
+    setText(rest);
+  };
   return html`
     <div class="tags" aria-label=${label}>
-      ${tags.map((t, i) => html`<span class="chip" key=${t}>${t}
+      ${tags.map((t, i) => html`<span class="chip" key=${i + ':' + t}>${t}
         <button type="button" aria-label=${'Remove ' + t} onClick=${() => onChange((l) => { l.splice(i, 1); })}>×</button></span>`)}
       <input value=${text} placeholder=${tags.length ? 'Add trait' : placeholder} aria-label=${'Add to ' + label}
-        onInput=${(e) => setText(e.currentTarget.value)}
+        onInput=${input}
         onKeyDown=${(e) => {
-          if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); add(e); }
+          if (e.key === 'Enter') { e.preventDefault(); add(e); }
           else if (e.key === 'Backspace' && !e.currentTarget.value && tags.length) onChange((l) => { l.pop(); });
         }}
         onBlur=${add} />
@@ -368,7 +442,7 @@ function ImportYAML({ dirty, onDone, onCancel }) {
   const [err, setErr] = useState('');
   const go = async () => {
     if (!text.trim()) { setErr('Paste a project YAML file first.'); return; }
-    if (dirty && !window.confirm('Importing replaces the project and drops your unsaved changes. Continue?')) return;
+    if (dirty && !(await confirmDialog('Importing replaces the project and drops your unsaved changes. Continue?', { confirm: 'Import and replace', danger: true }))) return;
     setBusy(true); setErr('');
     try {
       await api('/api/project', { method: 'POST', headers: { 'Content-Type': 'application/yaml' }, body: text });

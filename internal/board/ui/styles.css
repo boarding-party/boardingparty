@@ -149,7 +149,7 @@ input.strong { font-weight: 600; }
 .check input { width: auto; margin: 3px 0 0; }
 .check .hint { display: block; }
 .cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
-.cols h3 { font-size: 13px; margin: 0 0 8px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.cols h3 { font-size: 13px; margin: 0 0 8px; color: var(--muted); font-weight: 600; }
 .sub { background: #F7F9FB; border: 1px solid var(--line-soft); border-radius: 6px; padding: 10px; margin-bottom: 8px; display: flex; flex-direction: column; gap: 8px; }
 .sublabel { font-size: 12px; color: var(--muted); font-weight: 500; }
 .kv { display: flex; flex-direction: column; gap: 6px; }
@@ -164,6 +164,12 @@ input.strong { font-weight: 600; }
 .import { margin-bottom: 14px; border-color: var(--accent); }
 .toast { position: fixed; right: 24px; bottom: 24px; background: var(--ink); color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; box-shadow: 0 6px 24px rgba(24,32,43,.25); z-index: 10; }
 .note b { font-weight: 600; }
+.warn + .warn { margin-top: 2px; }
+dialog.confirm { border: 1px solid var(--line); border-radius: 8px; padding: 16px; max-width: 420px; width: calc(100% - 32px); color: var(--ink); box-shadow: 0 12px 40px rgba(24,32,43,.25); }
+dialog.confirm::backdrop { background: rgba(24,32,43,.45); }
+dialog.confirm p { margin: 0 0 14px; font-size: 14px; }
+.row.end { justify-content: flex-end; }
+.btn.danger-solid { background: var(--bad); border-color: var(--bad); color: #fff; }
 
 @media (max-width: 860px) {
   .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
