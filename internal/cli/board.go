@@ -22,6 +22,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/boarding-party/boardingparty/internal/board"
+	"github.com/boarding-party/boardingparty/internal/devdirector"
 )
 
 // kubeForwarder is board.Forwarder over a kube port-forward to the director pod.
@@ -169,6 +170,7 @@ func runBoard(ctx context.Context, fw board.Forwarder, o boardOpts, out io.Write
 
 func newBoard(g *globals) *cobra.Command {
 	var o boardOpts
+	var dev bool
 	cmd := &cobra.Command{
 		Use:   "board",
 		Short: "Open the boardingparty UI in your browser",
@@ -178,6 +180,9 @@ func newBoard(g *globals) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+			if dev {
+				return runDevBoard(ctx, o, cmd.OutOrStdout())
+			}
 			if err := g.chooseTarget(ctx); err != nil {
 				return err
 			}
@@ -199,5 +204,23 @@ func newBoard(g *globals) *cobra.Command {
 	}
 	cmd.Flags().IntVar(&o.port, "port", 0, "local port (0 = any free port)")
 	cmd.Flags().BoolVar(&o.noOpen, "no-open", false, "don't open a browser")
+	cmd.Flags().BoolVar(&dev, "dev-director", false, "serve a fake in-process director (no cluster) for checking the UI")
+	_ = cmd.Flags().MarkHidden("dev-director")
 	return cmd
+}
+
+// runDevBoard serves the UI over an in-process director with fake runs and a
+// sample project. It never touches kube.
+func runDevBoard(ctx context.Context, o boardOpts, out io.Writer) error {
+	d, err := devdirector.Start(ctx, devdirector.SampleProject(), devdirector.RunDuration)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	fmt.Fprintln(out, "dev director: no cluster, fake runs")
+	o.adminToken = d.Token
+	if isTerminal() {
+		o.in = os.Stdin
+	}
+	return runBoard(ctx, devdirector.Forwarder{Base: d.Base}, o, out)
 }

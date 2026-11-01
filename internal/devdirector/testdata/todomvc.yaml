@@ -1,0 +1,14 @@
+name: todomvc
+sites:
+  - https://demo.playwright.dev/todomvc
+roles:
+  - name: visitor
+    description: Someone using the app for the first time, with no account.
+    personas:
+      - name: Ada
+        traits: [careful, desktop]
+        identity:
+          email: ada@example.test
+    stories:
+      - name: todos
+        goal: Add three todos, complete one, check the counter says 2 items left
