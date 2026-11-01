@@ -12,8 +12,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	ktesting "k8s.io/client-go/testing"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -301,10 +303,52 @@ func TestLeaveWaitTimesOut(t *testing.T) {
 	o := opts(true, false)
 	o.timeout = 30 * time.Millisecond
 	err := runLeave(context.Background(), e.d, o, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "timed out") {
-		t.Fatalf("want timeout, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "scaled to 0 and still installed") {
+		t.Fatalf("want timeout naming the true state, got %v", err)
 	}
 	if !exists(t, e, "apps", "deployments", "bp-director") {
 		t.Error("director deleted although run pods remain")
+	}
+}
+
+func TestLeaveDeletesSessionThatAppearsDuringStop(t *testing.T) {
+	dpod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "bp-director-pod", Namespace: leaveNS, Labels: map[string]string{"app": "bp-director"}}}
+	e := newLeaveEnv(t, append(directorObjs(true), dpod))
+	e.kube.PrependReactor("update", "deployments", func(ktesting.Action) (bool, runtime.Object, error) {
+		_ = e.ctrl.Create(context.Background(), runSession("bp-run-late"))
+		return false, nil, nil
+	})
+	var out bytes.Buffer
+	if err := runLeave(context.Background(), e.d, opts(true, false), &out); err != nil {
+		t.Fatal(err)
+	}
+	var sl agentsv1.SessionList
+	if err := e.ctrl.List(context.Background(), &sl); err != nil || len(sl.Items) != 0 {
+		t.Errorf("late session left: %v %v", sl.Items, err)
+	}
+	if !strings.Contains(out.String(), "deleted session bp-run-late") {
+		t.Errorf("output: %s", out.String())
+	}
+	if exists(t, e, "apps", "deployments", "bp-director") {
+		t.Error("director left")
+	}
+}
+
+func TestLeaveSurvivesMissingSessionCRD(t *testing.T) {
+	e := newLeaveEnv(t, directorObjs(true))
+	noMatch := &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "tinysystems.io", Kind: "Session"}}
+	e.d.ctrl = interceptor.NewClient(e.ctrl.(ctrlclient.WithWatch), interceptor.Funcs{
+		List: func(ctx context.Context, c ctrlclient.WithWatch, l ctrlclient.ObjectList, o ...ctrlclient.ListOption) error {
+			if _, ok := l.(*agentsv1.SessionList); ok {
+				return noMatch
+			}
+			return c.List(ctx, l, o...)
+		},
+	})
+	if err := runLeave(context.Background(), e.d, opts(true, false), &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if exists(t, e, "apps", "deployments", "bp-director") {
+		t.Error("director left")
 	}
 }

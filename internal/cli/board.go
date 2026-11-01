@@ -181,6 +181,9 @@ func newBoard(g *globals) *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			if dev {
+				if g.namespace != "" || g.kubeContext != "" {
+					return errors.New("--dev-director runs without a cluster; drop -n/--context")
+				}
 				return runDevBoard(ctx, o, cmd.OutOrStdout())
 			}
 			if err := g.chooseTarget(ctx); err != nil {

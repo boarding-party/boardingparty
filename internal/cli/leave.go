@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -195,6 +196,9 @@ func collectObjects(ctx context.Context, d leaveDeps, o leaveOpts) ([]leaveObj, 
 func runSessionNames(ctx context.Context, d leaveDeps, ns string) ([]string, error) {
 	l := &agentsv1.SessionList{}
 	if err := d.ctrl.List(ctx, l, ctrlclient.InNamespace(ns), ctrlclient.HasLabels{runSessionLabel}); err != nil {
+		if meta.IsNoMatchError(err) {
+			return nil, nil // tiny's Session CRD is gone, so there are no runs
+		}
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
 	r := make([]string, 0, len(l.Items))
@@ -271,18 +275,14 @@ func runLeave(ctx context.Context, d leaveDeps, o leaveOpts, out io.Writer) erro
 	if err := stopDirector(ctx, d, o, deadline, out); err != nil {
 		return err
 	}
-	prop := metav1.DeletePropagationForeground
-	for _, name := range sessions {
-		s := &agentsv1.Session{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: o.ns}}
-		if err := d.ctrl.Delete(ctx, s, ctrlclient.PropagationPolicy(prop)); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("delete session %s: %w", name, err)
-		}
-		fmt.Fprintf(out, "deleted session %s\n", clean(name))
+	// A run may have started since the first listing (from an open board while
+	// the prompt waited, or while the director shut down), so list again.
+	deleted := map[string]bool{}
+	if err := deleteRunSessions(ctx, d, o, deleted, out); err != nil {
+		return err
 	}
-	if len(sessions) > 0 || pods > 0 {
-		if err := waitRunsGone(ctx, d, o, deadline); err != nil {
-			return err
-		}
+	if err := waitRunsGone(ctx, d, o, deadline, deleted, out); err != nil {
+		return err
 	}
 	for _, ob := range objs {
 		if err := ob.del(ctx); err != nil && !apierrors.IsNotFound(err) {
@@ -322,7 +322,7 @@ func stopDirector(ctx context.Context, d leaveDeps, o leaveOpts, deadline time.T
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out waiting for %d director pod(s) to go", len(l.Items))
+			return fmt.Errorf("timed out waiting for %d director pod(s) to go; the director is scaled to 0 and still installed, run `boardingparty leave` again", len(l.Items))
 		}
 		select {
 		case <-ctx.Done():
@@ -332,8 +332,33 @@ func stopDirector(ctx context.Context, d leaveDeps, o leaveOpts, deadline time.T
 	}
 }
 
-func waitRunsGone(ctx context.Context, d leaveDeps, o leaveOpts, deadline time.Time) error {
+// deleteRunSessions deletes every run Session currently listed that is not in
+// done, and records it there.
+func deleteRunSessions(ctx context.Context, d leaveDeps, o leaveOpts, done map[string]bool, out io.Writer) error {
+	names, err := runSessionNames(ctx, d, o.ns)
+	if err != nil {
+		return err
+	}
+	prop := metav1.DeletePropagationForeground
+	for _, name := range names {
+		if done[name] {
+			continue
+		}
+		s := &agentsv1.Session{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: o.ns}}
+		if err := d.ctrl.Delete(ctx, s, ctrlclient.PropagationPolicy(prop)); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete session %s: %w", name, err)
+		}
+		done[name] = true
+		fmt.Fprintf(out, "deleted session %s\n", clean(name))
+	}
+	return nil
+}
+
+func waitRunsGone(ctx context.Context, d leaveDeps, o leaveOpts, deadline time.Time, done map[string]bool, out io.Writer) error {
 	for {
+		if err := deleteRunSessions(ctx, d, o, done, out); err != nil {
+			return err
+		}
 		s, err := runSessionNames(ctx, d, o.ns)
 		if err != nil {
 			return err
@@ -346,7 +371,7 @@ func waitRunsGone(ctx context.Context, d leaveDeps, o leaveOpts, deadline time.T
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out waiting for %d run session(s) and %d run pod(s) to go; director left in place", len(s), p)
+			return fmt.Errorf("timed out waiting for %d run session(s) and %d run pod(s) to go; the director is scaled to 0 and still installed, run `boardingparty leave` again", len(s), p)
 		}
 		select {
 		case <-ctx.Done():
