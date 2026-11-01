@@ -118,7 +118,9 @@ func (g *globals) ensure(ctx context.Context, cfg *rest.Config, ns string) error
 		return err
 	}
 	d.verify = verifyDirector(cfg, ns)
-	token, err := ensureDirector(ctx, d, setupOpts{ns: ns, tag: wantedTag(), timeout: 3 * time.Minute}, os.Stderr)
+	d.imageExists = ghcrImageExists
+	tag, note := resolveTag()
+	token, err := ensureDirector(ctx, d, setupOpts{ns: ns, tag: tag, note: note, timeout: 3 * time.Minute}, os.Stderr)
 	if err != nil {
 		return err
 	}

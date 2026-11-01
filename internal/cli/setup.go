@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -238,6 +239,7 @@ func printManifest(out io.Writer, objs []*unstructured.Unstructured) error {
 
 type setupOpts struct {
 	ns, tag string
+	note    string // printed before an install or upgrade
 	dryRun  bool
 	force   bool
 	timeout time.Duration
@@ -250,6 +252,8 @@ type setupDeps struct {
 	apply func(ctx context.Context, obj *unstructured.Unstructured) error
 	// verify checks the director answers GET /api/runs.
 	verify func(ctx context.Context) error
+	// imageExists reports whether repo:tag is published; nil skips the check.
+	imageExists func(ctx context.Context, repo, tag string) (bool, error)
 }
 
 var waitPoll = 2 * time.Second
@@ -265,6 +269,12 @@ func runSetup(ctx context.Context, d setupDeps, o setupOpts, out io.Writer) erro
 	if o.dryRun {
 		fmt.Fprintln(out, "---")
 		return printManifest(out, objs)
+	}
+	if err := checkImages(ctx, d, o.tag); err != nil {
+		return err
+	}
+	if o.note != "" {
+		fmt.Fprintln(out, o.note)
 	}
 	wctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
@@ -383,6 +393,12 @@ func ensureDirector(ctx context.Context, d setupDeps, o setupOpts, out io.Writer
 			fmt.Fprintln(out, l)
 		}
 	}
+	if err := checkImages(ctx, d, o.tag); err != nil {
+		return "", err
+	}
+	if o.note != "" {
+		fmt.Fprintln(out, o.note)
+	}
 	objs, err := renderManifest(deploy.Director, o.ns, o.tag)
 	if err != nil {
 		return "", err
@@ -431,12 +447,111 @@ func tagOf(image string) string {
 
 var releaseSemver = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
 
-// wantedTag is the CLI's own release version without the leading v, else main.
+// wantedTag is the image tag this CLI wants; see resolveTag.
 func wantedTag() string {
-	if bi, ok := debug.ReadBuildInfo(); ok && releaseSemver.MatchString(bi.Main.Version) {
-		return strings.TrimPrefix(bi.Main.Version, "v")
+	tag, _ := resolveTag()
+	return tag
+}
+
+// resolveTag picks the image tag for this binary. A release build wants its
+// own version. A clean dev build wants the image CI built from the same commit
+// (sha-<7 chars>); a dirty or unstamped one falls back to main and returns a
+// note saying so.
+func resolveTag() (tag, note string) {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return tagFromBuild("", "", false)
 	}
-	return defaultImageTag
+	var rev string
+	var modified bool
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			modified = s.Value == "true"
+		}
+	}
+	return tagFromBuild(bi.Main.Version, rev, modified)
+}
+
+const devBuildNote = "dev build: using image tag main, which may not match this CLI"
+
+func tagFromBuild(version, rev string, modified bool) (tag, note string) {
+	if releaseSemver.MatchString(version) {
+		return strings.TrimPrefix(version, "v"), ""
+	}
+	if rev != "" && !modified {
+		if len(rev) > 7 {
+			rev = rev[:7]
+		}
+		return "sha-" + rev, ""
+	}
+	return defaultImageTag, devBuildNote
+}
+
+// checkImages fails when a sha-… tag has no published images yet. Other tags
+// are not checked, and a nil check (tests) skips it.
+func checkImages(ctx context.Context, d setupDeps, tag string) error {
+	if d.imageExists == nil || !strings.HasPrefix(tag, "sha-") {
+		return nil
+	}
+	for _, repo := range []string{"boarding-party/director", "boarding-party/worker"} {
+		ok, err := d.imageExists(ctx, repo, tag)
+		if err != nil {
+			return fmt.Errorf("check image %s:%s on ghcr.io: %w", repo, tag, err)
+		}
+		if !ok {
+			return fmt.Errorf("images for %s aren't published yet — wait for CI (github.com/boarding-party/boardingparty/actions) and try again", strings.TrimPrefix(tag, "sha-"))
+		}
+	}
+	return nil
+}
+
+// ghcrImageExists asks ghcr.io anonymously whether repo:tag has a manifest.
+func ghcrImageExists(ctx context.Context, repo, tag string) (bool, error) {
+	c := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://ghcr.io/token?scope=repository:"+repo+":pull", nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("token request: %s", resp.Status)
+	}
+	var tok struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&tok); err != nil {
+		return false, err
+	}
+	req, err = http.NewRequestWithContext(ctx, http.MethodHead, "https://ghcr.io/v2/"+repo+"/manifests/"+tag, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok.Token)
+	req.Header.Set("Accept", strings.Join([]string{
+		"application/vnd.oci.image.index.v1+json",
+		"application/vnd.docker.distribution.manifest.list.v2+json",
+		"application/vnd.oci.image.manifest.v1+json",
+		"application/vnd.docker.distribution.manifest.v2+json",
+	}, ", "))
+	r2, err := c.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer r2.Body.Close()
+	switch r2.StatusCode {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	}
+	return false, fmt.Errorf("manifest request: %s", r2.Status)
 }
 
 // rolloutComplete is true once the controller has seen the latest spec and
@@ -514,6 +629,7 @@ func verifyDirector(cfg *rest.Config, ns string) func(context.Context) error {
 
 func newSetup(g *globals) *cobra.Command {
 	var o setupOpts
+	defTag, defNote := resolveTag()
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Check the cluster and install the director",
@@ -526,6 +642,9 @@ func newSetup(g *globals) *cobra.Command {
 				return err
 			}
 			o.ns = g.namespace
+			if !cmd.Flags().Changed("image-tag") {
+				o.note = defNote
+			}
 			cfg, _, err := g.kubeConfig()
 			if err != nil {
 				return err
@@ -541,10 +660,11 @@ func newSetup(g *globals) *cobra.Command {
 				return err
 			}
 			d.verify = verifyDirector(cfg, o.ns)
+			d.imageExists = ghcrImageExists
 			return runSetup(cmd.Context(), d, o, cmd.OutOrStdout())
 		},
 	}
-	cmd.Flags().StringVar(&o.tag, "image-tag", wantedTag(), "director and worker image tag")
+	cmd.Flags().StringVar(&o.tag, "image-tag", defTag, "director and worker image tag")
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "run the checks and print the rendered manifest; apply nothing")
 	cmd.Flags().BoolVar(&o.force, "force-conflicts", false, "take over fields owned by another tool (use once after a kubectl apply)")
 	cmd.Flags().DurationVar(&o.timeout, "timeout", 3*time.Minute, "how long to wait for the director")

@@ -499,3 +499,46 @@ func TestConflictHint(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestTagFromBuild(t *testing.T) {
+	cases := []struct {
+		name, version, rev string
+		modified           bool
+		tag, note          string
+	}{
+		{"release", "v1.2.3", "abcdef1234567", false, "1.2.3", ""},
+		{"release ignores dirty", "v1.2.3", "abcdef1234567", true, "1.2.3", ""},
+		{"clean dev", "(devel)", "abcdef1234567890", false, "sha-abcdef1", ""},
+		{"modified dev", "(devel)", "abcdef1234567890", true, "main", devBuildNote},
+		{"no revision", "(devel)", "", false, "main", devBuildNote},
+	}
+	for _, c := range cases {
+		tag, note := tagFromBuild(c.version, c.rev, c.modified)
+		if tag != c.tag || note != c.note {
+			t.Errorf("%s: got %q %q, want %q %q", c.name, tag, note, c.tag, c.note)
+		}
+	}
+}
+
+func TestEnsureDirectorUnpublishedImageAppliesNothing(t *testing.T) {
+	var applied []string
+	d := ensureDeps(&applied, true)
+	d.imageExists = func(context.Context, string, string) (bool, error) { return false, nil }
+	_, err := ensureDirector(context.Background(), d, setupOpts{ns: testNS, tag: "sha-abcdef1", timeout: time.Second}, &strings.Builder{})
+	if err == nil || !strings.Contains(err.Error(), "images for abcdef1 aren't published yet") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(applied) != 0 {
+		t.Errorf("applied = %v", applied)
+	}
+}
+
+func TestCheckImagesSkipsNonSha(t *testing.T) {
+	d := setupDeps{imageExists: func(context.Context, string, string) (bool, error) { return false, nil }}
+	if err := checkImages(context.Background(), d, "main"); err != nil {
+		t.Error(err)
+	}
+	if err := checkImages(context.Background(), d, "sha-abcdef1"); err == nil {
+		t.Error("want error")
+	}
+}
